@@ -4,6 +4,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using oracle_backend.Dbcontexts;
+using oracle_backend.Patterns.Repository;
+using oracle_backend.Patterns.Repository.Implementations;
+using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Services;
 
 
@@ -72,6 +75,13 @@ namespace oracle_backend
             // 注册服务
             builder.Services.AddScoped<SaleEventService>();
             builder.Services.AddScoped<ISaleEventService, SaleEventService>();
+            builder.Services.AddScoped<IAccountRepository, AccountRepository>();
+            builder.Services.AddScoped<IStoreRepository, StoreRepository>();
+            builder.Services.AddScoped<ISaleEventRepository, SaleEventRepository>();
+            builder.Services.AddScoped<IAreaRepository, AreaRepository>();
+            builder.Services.AddScoped<ICollaborationRepository, CollaborationRepository>();
+            builder.Services.AddScoped<IStoreRepository, StoreRepository>();
+            builder.Services.AddScoped<IVenueEventRepository, VenueEventRepository>();
 
             // 添加CORS配置
             builder.Services.AddCors(options =>
