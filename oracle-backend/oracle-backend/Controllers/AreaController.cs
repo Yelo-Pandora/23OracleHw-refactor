@@ -70,7 +70,7 @@ namespace oracle_backend.Controllers
             public int? ParkingFee { get; set; }
         }
 
-        // POST: api/Areas (对应 2.3.1 添加新区域)
+        //// POST: api/Areas (对应 2.3.1 添加新区域)
         //[HttpPost]
         //public async Task<IActionResult> CreateArea([FromBody] AreaCreateDto dto)
         //{
@@ -153,118 +153,100 @@ namespace oracle_backend.Controllers
         [HttpPost]
         public async Task<IActionResult> CreateArea([FromBody] AreaCreateDto dto)
         {
+            // 1. 业务逻辑检查：区域ID是否已存在
             var existingAreaCheck = await _context.Areas.FindAsync(dto.AreaId);
             if (existingAreaCheck != null)
             {
                 return BadRequest($"区域ID '{dto.AreaId}' 已存在。");
             }
 
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            // 2. 准备基表数据
+            // 对应原逻辑中隐含的 Area 基类插入
+            var area = new Area
+            {
+                AREA_ID = dto.AreaId,
+                ISEMPTY = dto.IsEmpty,
+                AREA_SIZE = dto.AreaSize,
+                CATEGORY = dto.Category.ToUpper()
+            };
+
+            // =================================================================================
+            // 第一阶段：插入基表 (Area)
+            // 这是一个独立的“微事务”，立即提交以释放锁，防止 Leaf Context 读取时死锁
+            // =================================================================================
             try
             {
-                // 1. Controller 负责插入 Area 基表
-                // 这里我们创建一个通用的 Area 对象，Specific 的字段不在这里赋值
-                var area = new Area
-                {
-                    AREA_ID = dto.AreaId,
-                    ISEMPTY = dto.IsEmpty,
-                    AREA_SIZE = dto.AreaSize,
-                    CATEGORY = dto.Category.ToUpper()
-                };
                 _context.Areas.Add(area);
                 await _context.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"基表数据插入失败: {dto.AreaId}");
+                return StatusCode(500, "服务器内部错误：基表创建失败");
+            }
 
-                // 2. [Composite] 构建 Leaf 并利用 UpdateInfoAsync 自动创建子表记录
+            // =================================================================================
+            // 第二阶段：使用 Composite 模式插入子表数据 (Retail/Parking/Event/Other)
+            // 这里包含了“手动回滚”逻辑，以模拟原有的 Transaction 原子性
+            // =================================================================================
+            try
+            {
+                // 1. 构建对应的 Leaf 组件
                 var component = CreateComponentFactory(dto.AreaId, dto.Category);
 
-                // 3. 构造配置包，将 DTO 数据映射过去
+                // 2. 构造配置包 (对应原逻辑中的 switch case 赋值)
+                // 这里负责提取 DTO 中的数据，Leaf 内部负责处理默认值 (如 "正常营业", 0 等)
                 var config = new AreaConfiguration
                 {
-                    // 映射通用字段
                     IsEmpty = dto.IsEmpty,
                     AreaSize = dto.AreaSize,
 
-                    // 映射多态字段 (根据 Category 决定 Price 放什么)
+                    // 映射价格字段
                     Price = dto.Category.ToUpper() switch
                     {
-                        "RETAIL" => dto.BaseRent,
-                        "PARKING" => (double?)dto.ParkingFee,
-                        "EVENT" => (double?)dto.AreaFee,
+                        "RETAIL" => dto.BaseRent,           // 对应 RetailArea.BASE_RENT
+                        "PARKING" => (double?)dto.ParkingFee, // 对应 ParkingLot.PARKING_FEE
+                        "EVENT" => (double?)dto.AreaFee,      // 对应 EventArea.AREA_FEE
                         _ => null
                     },
 
-                    // 映射状态/容量/类型
-                    Status = dto.RentStatus, // Retail 使用
-                    Capacity = dto.Capacity, // Event 使用
-                    TypeDescription = dto.Type // Other 使用
+                    // 映射状态/类型/容量
+                    Status = dto.RentStatus,       // 对应 RetailArea.RENT_STATUS (Leaf内部处理 null -> "正常营业")
+                    Capacity = dto.Capacity,       // 对应 EventArea.CAPACITY
+                    TypeDescription = dto.Type     // 对应 OtherArea.TYPE
                 };
 
-                // 4. 调用接口完成子表数据初始化
+                // 3. 调用 Leaf 执行子表插入
+                // Leaf 的 UpdateInfoAsync 方法内部包含了 "如果不存在则 Insert" 的逻辑
                 await component.UpdateInfoAsync(config);
 
-                await transaction.CommitAsync();
                 return Ok(new { message = "区域创建成功" });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, $"创建区域 {dto.AreaId} 失败。");
-                return StatusCode(500, "创建区域失败");
+                // =============================================================================
+                // 异常补偿机制 (手动回滚)
+                // 如果子表插入失败（例如违反约束），必须删除第一阶段插入的基表数据
+                // 这样才能保证和原代码一样的“要么全成功，要么全失败”的逻辑
+                // =============================================================================
+                _logger.LogError(ex, $"创建子表数据失败，正在回滚基表数据: {dto.AreaId}");
+
+                try
+                {
+                    _context.Areas.Remove(area);
+                    await _context.SaveChangesAsync();
+                }
+                catch (Exception rollbackEx)
+                {
+                    // 这种情况极少发生，需记录严重错误
+                    _logger.LogError(rollbackEx, $"回滚失败！数据可能不一致，请检查 AreaID: {dto.AreaId}");
+                }
+
+                return StatusCode(500, "创建区域失败: " + ex.Message);
             }
         }
 
 
-        // GET: api/Areas (对应 2.3.2 区域信息查询)
-        //[HttpGet("ByCategory")]
-        //public async Task<IActionResult> GetAreas([FromQuery] string? category, [FromQuery] int? isEmpty)
-        //{
-        //    var query = _context.Areas.AsQueryable();
-
-        //    if (!string.IsNullOrEmpty(category))
-        //    {
-        //        query = query.Where(a => a.CATEGORY.ToUpper() == category.ToUpper());
-        //    }
-
-        //    if (isEmpty.HasValue)
-        //    {
-        //        query = query.Where(a => a.ISEMPTY == isEmpty.Value);
-        //    }
-
-        //    var result = await query.Select(a => new
-        //    {
-        //        a.AREA_ID,
-        //        a.ISEMPTY,
-        //        a.AREA_SIZE,
-        //        a.CATEGORY,
-        //        BaseRent = _context.RetailAreas
-        //                        .Where(ra => ra.AREA_ID == a.AREA_ID)
-        //                        .Select(ra => (double?)ra.BASE_RENT)
-        //                        .FirstOrDefault(),
-        //        RentStatus = _context.RetailAreas
-        //                       .Where(ea => ea.AREA_ID == a.AREA_ID)
-        //                       .Select(ea => ea.RENT_STATUS)
-        //                       .FirstOrDefault(),
-        //        AreaFee = _context.EventAreas
-        //                       .Where(ea => ea.AREA_ID == a.AREA_ID)
-        //                       .Select(ea => (double?)ea.AREA_FEE)
-        //                       .FirstOrDefault(),
-        //        Capacity = _context.EventAreas
-        //                       .Where(ea => ea.AREA_ID == a.AREA_ID)
-        //                       .Select(ea => (int?)ea.CAPACITY)
-        //                       .FirstOrDefault(),
-        //        ParkingFee = _context.ParkingLots
-        //                       .Where(ea => ea.AREA_ID == a.AREA_ID)
-        //                       .Select(ea => ea.PARKING_FEE)
-        //                       .FirstOrDefault(),
-        //        Type = _context.OtherAreas
-        //                       .Where(ea => ea.AREA_ID == a.AREA_ID)
-        //                       .Select(ea => ea.TYPE)
-        //                       .FirstOrDefault()
-        //    }).ToListAsync();
-        //    if (result == null)
-        //        return NotFound();
-        //    return Ok(result);
-        //}
         [HttpGet("ByCategory")]
         public async Task<IActionResult> GetAreas([FromQuery] string? category, [FromQuery] int? isEmpty)
         {

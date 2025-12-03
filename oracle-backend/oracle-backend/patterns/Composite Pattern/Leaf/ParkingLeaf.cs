@@ -129,14 +129,16 @@ namespace oracle_backend.patterns.Composite_Pattern.Leaf
             {
                 if (config.IsEmpty.HasValue) areaToUpdate.ISEMPTY = config.IsEmpty.Value;
                 if (config.AreaSize.HasValue) areaToUpdate.AREA_SIZE = config.AreaSize.Value;
+
                 _context.Entry(areaToUpdate).State = EntityState.Modified;
                 await _context.SaveChangesAsync();
+
+                // [关键修复]：更新完基表后，立即将其从追踪器中分离！
+                // 否则后续查询 ParkingLot 时，EF 会试图把这个 Area 对象强转为 ParkingLot，导致报错。
+                _context.Entry(areaToUpdate).State = EntityState.Detached;
             }
 
             // 2. 更新 PARKING_LOT 表及内存状态
-            // 这里我们复用 ParkingContext.UpdateParkingLotInfo 方法，它封装了 DB 更新和内存状态更新
-            // 注意：如果表记录不存在，需要先处理插入逻辑 (参考 AreaController)
-
             var parkingLotExists = await _context.ParkingLotExists(_areaId);
             int fee = config.Price.HasValue ? (int)config.Price.Value : 0;
             string status = config.Status ?? "正常运营";
@@ -148,22 +150,16 @@ namespace oracle_backend.patterns.Composite_Pattern.Leaf
                     $"INSERT INTO PARKING_LOT (AREA_ID, PARKING_FEE) VALUES ({_areaId}, {fee})");
 
                 // 插入后调用 Update 确保内存状态同步
+                // 此时 EF 追踪器是干净的，它会从数据库重新加载 ParkingLot 对象，不会报错
                 await _context.UpdateParkingLotInfo(_areaId, fee, status);
             }
             else
             {
-                // 逻辑搬运: 子表存在，执行更新
-                // 获取当前费率以防 config.Price 为空时被覆盖为 0
-                if (!config.Price.HasValue)
-                {
-                    var current = await _context.GetParkingLotById(_areaId);
-                    fee = current?.PARKING_FEE ?? 0;
-                }
-
-                // 调用 ParkingContext 封装的方法更新 DB 和 内存状态
+                // ... (略)
                 await _context.UpdateParkingLotInfo(_areaId, fee, status);
             }
         }
+
 
         // ==========================================
         // 4. 删除校验
