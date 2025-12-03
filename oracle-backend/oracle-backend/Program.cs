@@ -87,13 +87,17 @@ namespace oracle_backend
             var app = builder.Build();
 
             // Configure the HTTP request pipeline.
-            if (app.Environment.IsDevelopment())
-            {
-                app.UseSwagger();
-                app.UseSwaggerUI();
-            }
+            //if (app.Environment.IsDevelopment())
+            //{
+            //    app.UseSwagger();
+            //    app.UseSwaggerUI();
+            //}
+            //暂时强制开启 Swagger 等到部署时再关掉
+            app.UseSwagger();
+            app.UseSwaggerUI();
 
-            app.UseHttpsRedirection();
+            //暂时强制关闭 Https 等到部署时再开启
+            //app.UseHttpsRedirection();
 
             // 启用CORS
             app.UseCors("AllowAll");
