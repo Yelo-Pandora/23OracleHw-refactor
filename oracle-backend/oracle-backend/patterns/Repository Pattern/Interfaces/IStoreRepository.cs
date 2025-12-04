@@ -23,5 +23,6 @@ namespace oracle_backend.Patterns.Repository.Interfaces
 
         // 获取基础统计
         Task<BasicStatistics> GetBasicStatistics();
+        Task<List<RentCollectionDetail>> GetRentCollectionDetailsAsync(string period);
     }
 }

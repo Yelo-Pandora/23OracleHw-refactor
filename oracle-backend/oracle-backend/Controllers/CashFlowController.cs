@@ -19,6 +19,7 @@ using Oracle.ManagedDataAccess.Client;
 using oracle_backend.patterns.Composite_Pattern.Component;
 using oracle_backend.patterns.Composite_Pattern.Container;
 using oracle_backend.patterns.Composite_Pattern.Leaf;
+using oracle_backend.Patterns.Repository.Interfaces;
 
 namespace oracle_backend.Controllers
 {
@@ -37,6 +38,11 @@ namespace oracle_backend.Controllers
         private readonly ParkingContext _parkingContext;
         private readonly ComplexDbContext _complexContext;
 
+        // [新增] Repository 引用，用于构建 Composite 树
+        private readonly IAreaRepository _areaRepository;
+        private readonly IStoreRepository _storeRepository;
+        private readonly IParkingRepository _parkingRepository;
+        private readonly IVenueEventRepository _venueEventRepository;
         public CashFlowController(
             CashFlowDbContext context,
             ILogger<CashFlowController> logger,
@@ -46,7 +52,11 @@ namespace oracle_backend.Controllers
             CollaborationDbContext collabContext,
             // [新增] 注入参数
             ParkingContext parkingContext,
-            ComplexDbContext complexContext)
+            ComplexDbContext complexContext,
+            IAreaRepository areaRepository,
+            IStoreRepository storeRepository,
+            IParkingRepository parkingRepository,
+            IVenueEventRepository venueEventRepository)
         {
             _context = context;
             _logger = logger;
@@ -57,6 +67,10 @@ namespace oracle_backend.Controllers
             // [新增] 赋值
             _parkingContext = parkingContext;
             _complexContext = complexContext;
+            _areaRepository = areaRepository;
+            _storeRepository = storeRepository;
+            _parkingRepository = parkingRepository;
+            _venueEventRepository = venueEventRepository;
         }
 
         // [新增] 构建整个商场组合树
@@ -65,32 +79,36 @@ namespace oracle_backend.Controllers
             var mallRoot = new AreaContainer("整个商场组合树的根节点");
 
             // 1. 添加商铺节点 (Retail Leafs)
-            // 注意：需查询所有 RetailArea 的 ID
-            var retailIds = await _storeContext.RETAIL_AREA.Select(r => r.AREA_ID).ToListAsync();
-            foreach (var id in retailIds)
+            // 使用 AreaRepository 获取对应类型的区域列表
+            var retailAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("RETAIL", null);
+            foreach (var area in retailAreas)
             {
-                mallRoot.Add(new RetailLeaf(_storeContext, id));
+                // [修复] 传入 AreaRepo + StoreRepo
+                mallRoot.Add(new RetailLeaf(_areaRepository, _storeRepository, area.AREA_ID));
             }
 
             // 2. 添加停车场节点 (Parking Leafs)
-            var parkingIds = await _parkingContext.PARKING_LOT.Select(p => p.AREA_ID).ToListAsync();
-            foreach (var id in parkingIds)
+            var parkingAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("PARKING", null);
+            foreach (var area in parkingAreas)
             {
-                mallRoot.Add(new ParkingLeaf(_parkingContext, id));
+                // [修复] 传入 AreaRepo + ParkingRepo
+                mallRoot.Add(new ParkingLeaf(_areaRepository, _parkingRepository, area.AREA_ID));
             }
 
             // 3. 添加活动场地节点 (Event Leafs)
-            var eventIds = await _complexContext.EventAreas.Select(e => e.AREA_ID).ToListAsync();
-            foreach (var id in eventIds)
+            var eventAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("EVENT", null);
+            foreach (var area in eventAreas)
             {
-                mallRoot.Add(new EventLeaf(_complexContext, id));
+                // [修复] 传入 AreaRepo
+                mallRoot.Add(new EventLeaf(_areaRepository, _venueEventRepository, area.AREA_ID));
             }
 
-            // 4. 添加其他区域 (Other Leafs) - 虽然目前没收入，但属于商场一部分
-            var otherIds = await _complexContext.OtherAreas.Select(o => o.AREA_ID).ToListAsync();
-            foreach (var id in otherIds)
+            // 4. 添加其他区域 (Other Leafs)
+            var otherAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("OTHER", null);
+            foreach (var area in otherAreas)
             {
-                mallRoot.Add(new OtherLeaf(_complexContext, id));
+                // [修复] 传入 AreaRepo
+                mallRoot.Add(new OtherLeaf(_areaRepository, area.AREA_ID));
             }
 
             return mallRoot;

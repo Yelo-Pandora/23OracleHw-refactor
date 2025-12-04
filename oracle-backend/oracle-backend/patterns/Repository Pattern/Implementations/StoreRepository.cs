@@ -52,5 +52,10 @@ namespace oracle_backend.Patterns.Repository.Implementations
         {
             return await _storeContext.GetBasicStatistics();
         }
+        public async Task<List<RentCollectionDetail>> GetRentCollectionDetailsAsync(string period)
+        {
+            // 直接调用
+            return await _storeContext.GetRentCollectionDetails(period);
+        }
     }
 }

@@ -13,7 +13,7 @@ namespace oracle_backend.Patterns.Repository.Interfaces
         Task<Area?> GetAreaByIdAsync(int id);
         Task<IEnumerable<RetailArea>> GetRentedAreasByStoreIdAsync(int storeId);
 
-        // --- 2. 依赖性检查 (用于 DeleteArea 时的校验) ---
+        // 依赖性检查
         // 检查是否被商铺租用
         Task<bool> HasActiveRentAsync(int areaId);
         // 检查是否有关联的场地活动
@@ -21,11 +21,27 @@ namespace oracle_backend.Patterns.Repository.Interfaces
         // 检查是否有停车位分布
         Task<bool> HasParkingSpacesAsync(int areaId);
 
-        // --- 3. 特定类型操作 (用于 Create/Update) ---
         // 添加特定类型的区域 (虽然 BaseRepo.Add 也能做，但显式定义更清晰)
         Task AddRetailAreaAsync(RetailArea area);
         Task AddEventAreaAsync(EventArea area);
         Task AddParkingLotAsync(ParkingLot area);
         Task AddOtherAreaAsync(OtherArea area);
+
+        // 子类型详情查询
+        Task<RetailArea?> GetRetailAreaDetailAsync(int areaId);
+        Task<EventArea?> GetEventAreaDetailAsync(int areaId);
+        Task<ParkingLot?> GetParkingLotDetailAsync(int areaId);
+        Task<OtherArea?> GetOtherAreaDetailAsync(int areaId);
+
+        // 子类型更新/插入
+        Task UpsertRetailAreaAsync(int areaId, string status, double baseRent);
+        Task UpsertEventAreaAsync(int areaId, int capacity, double areaFee);
+        Task UpsertParkingLotAsync(int areaId, string status, double parkingFee);
+        Task UpsertOtherAreaAsync(int areaId, string type);
+
+        // 删除校验
+        Task<bool> HasRetailDependencyAsync(int areaId); // 检查 RentStore
+        Task<bool> HasEventDependencyAsync(int areaId);  // 检查 VenueEvent
+        Task<bool> HasParkingDependencyAsync(int areaId); // 检查 ParkingSpaceDistribution
     }
 }

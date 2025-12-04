@@ -132,5 +132,19 @@ namespace oracle_backend.Patterns.Repository.Implementations
         {
             return await _complexContext.EventAreas.FindAsync(id);
         }
+
+        public async Task<IEnumerable<VenueEventDetail>> GetSettledEventsInRangeAsync(DateTime startDate, DateTime endDate, int areaId)
+        {
+            // 逻辑复刻自 CashFlowController.GetEventSettlementsAsync，并增加 AreaId 过滤
+            return await _complexContext.VenueEventDetails
+                .Include(ved => ved.venueEventNavigation)
+                .Include(ved => ved.eventAreaNavigation)
+                .Include(ved => ved.collaborationNavigation)
+                .Where(ved => ved.AREA_ID == areaId &&
+                              ved.STATUS == "已结算" &&
+                              ved.RENT_END >= startDate &&
+                              ved.RENT_START <= endDate)
+                .ToListAsync();
+        }
     }
 }

@@ -20,6 +20,7 @@ namespace oracle_backend.Patterns.Repository.Interfaces
         // 报表与列表查询
         Task<IEnumerable<VenueEventDetail>> GetVenueEventsWithDetailsAsync(string? status, int? areaId);
         Task<IEnumerable<VenueEventDetail>> GetVenueEventsInRangeAsync(DateTime startDate, DateTime endDate);
+        Task<IEnumerable<VenueEventDetail>> GetSettledEventsInRangeAsync(DateTime startDate, DateTime endDate, int areaId);
 
         // 临时权限管理
         // 查找特定的临时权限

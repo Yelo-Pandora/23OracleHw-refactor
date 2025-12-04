@@ -1,102 +1,58 @@
-﻿//ParkingLeaf.cs
-using Microsoft.EntityFrameworkCore;
-using oracle_backend.Dbcontexts;
-using oracle_backend.Models;
+﻿using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.patterns.Composite_Pattern.Component;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 using static oracle_backend.Models.CashFlowDto;
 
 namespace oracle_backend.patterns.Composite_Pattern.Leaf
 {
-    /// <summary>
-    /// 停车场区域叶子节点 (对应 PARKING_LOT)
-    /// 封装 AreaController, ParkingController, CashFlowController 中针对停车场的业务
-    /// </summary>
     public class ParkingLeaf : IAreaComponent
     {
-        private readonly ParkingContext _context;
+        private readonly IAreaRepository _areaRepository;
+        private readonly IParkingRepository _parkingRepository;
         private readonly int _areaId;
 
-        public ParkingLeaf(ParkingContext context, int areaId)
+        public ParkingLeaf(IAreaRepository areaRepository, IParkingRepository parkingRepository, int areaId)
         {
-            _context = context;
+            _areaRepository = areaRepository;
+            _parkingRepository = parkingRepository;
             _areaId = areaId;
         }
 
-        // ==========================================
-        // 1. 财务统计
-        // 逻辑来源: CashFlowController.GetParkingIncomesAsync
-        // ==========================================
         public async Task<IEnumerable<CashFlowRecord>> GetCashFlowRecordsAsync(DateTime startDate, DateTime endDate)
         {
-            // 逻辑搬运: 联表查询 CAR -> PARK -> PARKING_SPACE_DISTRIBUTION -> PARKING_LOT
-            // 筛选出属于当前 AreaId 且在时间范围内的已完成停车记录
-            var query = from c in _context.CAR
-                        join p in _context.PARK on new { c.LICENSE_PLATE_NUMBER, c.PARK_START } equals new { p.LICENSE_PLATE_NUMBER, p.PARK_START }
-                        join psd in _context.PARKING_SPACE_DISTRIBUTION on p.PARKING_SPACE_ID equals psd.PARKING_SPACE_ID
-                        join pl in _context.PARKING_LOT on psd.AREA_ID equals pl.AREA_ID
-                        where psd.AREA_ID == _areaId
-                           && c.PARK_END.HasValue
-                           && c.PARK_END >= startDate
-                           && c.PARK_END <= endDate
-                        select new
-                        {
-                            c.LICENSE_PLATE_NUMBER,
-                            c.PARK_START,
-                            PARK_END = c.PARK_END.Value,
-                            pl.PARKING_FEE,
-                            psd.AREA_ID
-                        };
+            // 1. 获取该区域下所有的车位ID
+            var spaces = await _parkingRepository.GetParkingSpacesAsync(_areaId);
+            var spaceIds = spaces.Select(s => s.PARKING_SPACE_ID).ToHashSet();
 
-            var dbRecords = await query.ToListAsync();
-            var result = new List<CashFlowRecord>();
+            // 2. 获取时间段内所有支付记录 (内存中)
+            var allPayments = await _parkingRepository.GetPaymentRecordsInTimeRangeAsync(startDate, endDate);
 
-            foreach (var r in dbRecords)
-            {
-                // 计算逻辑搬运: 时长向上取整 * 费率
-                var duration = r.PARK_END - r.PARK_START;
-                var hours = Math.Ceiling(duration.TotalHours);
-                var amount = hours * (double)r.PARKING_FEE;
-
-                result.Add(new CashFlowRecord
+            // 3. 筛选并转换
+            var records = allPayments
+                .Where(p => spaceIds.Contains(p.ParkingSpaceId)) // 关键筛选：只取本区域车位
+                .Select(p => new CashFlowRecord
                 {
-                    Date = r.PARK_END, // 以出场时间结算
+                    Date = p.PaymentTime ?? p.ParkEnd ?? DateTime.Now,
                     Type = "收入",
-                    Category = "停车场收费", // 对应 CashFlowController 的模块类型
-                    Description = $"车辆 {r.LICENSE_PLATE_NUMBER} 在区域{r.AREA_ID}停车费支付",
-                    Amount = amount,
-                    Reference = $"停车支付-{r.LICENSE_PLATE_NUMBER}-{r.PARK_END:yyyyMMddHHmmss}",
-                    RelatedPartyType = null,
-                    RelatedPartyId = null
+                    Category = "停车场收费",
+                    Description = $"车牌 {p.LicensePlateNumber} 停车费",
+                    Amount = (double)p.TotalFee,
+                    Reference = $"Parking-{p.LicensePlateNumber}-{p.ParkStart:yyyyMMddHHmm}",
+                    RelatedPartyType = null
                 });
-            }
 
-            return result;
+            return records;
         }
 
-        // ==========================================
-        // 2. 详情快照
-        // 逻辑来源: AreaController.GetAreas / ParkingController.GetParkingLotInfo
-        // ==========================================
         public async Task<AreaComponentInfo> GetDetailsAsync()
         {
-            // 1. 查找主表
-            var area = await _context.AREA.FindAsync(_areaId);
+            var area = await _areaRepository.GetAreaByIdAsync(_areaId);
+            var parkingLot = await _areaRepository.GetParkingLotDetailAsync(_areaId);
+
+            // 使用 ParkingRepo 的现有业务方法
+            var stats = await _parkingRepository.GetParkingStatusStatisticsAsync(_areaId);
+            var status = await _parkingRepository.GetParkingLotStatusAsync(_areaId);
+
             if (area == null) return null;
-
-            // 2. 获取停车场专用统计信息 (逻辑搬运自 ParkingController)
-            // GetParkingStatusStatistics 内部计算了 OccupiedSpaces / TotalSpaces
-            var stats = await _context.GetParkingStatusStatistics(_areaId);
-
-            // 3. 获取停车场专用状态 (逻辑搬运自 ParkingController)
-            // 状态存储在 ParkingContext 的静态字典中
-            var status = _context.GetParkingLotStatus(_areaId);
-
-            // 4. 获取停车场基本信息 (费率)
-            var parkingLot = await _context.GetParkingLotById(_areaId);
 
             return new AreaComponentInfo
             {
@@ -104,80 +60,43 @@ namespace oracle_backend.patterns.Composite_Pattern.Leaf
                 Category = "PARKING",
                 IsEmpty = area.ISEMPTY,
                 AreaSize = area.AREA_SIZE,
-
-                // 占用率归一化 (0.0 - 1.0)
                 OccupancyRate = stats.OccupancyRate / 100.0,
-
-                // 填充 Parking 特有字段
-                Price = parkingLot?.PARKING_FEE,      // ParkingFee -> Price
-                CapacityOrSpaces = stats.TotalSpaces, // TotalSpaces -> CapacityOrSpaces
-                BusinessStatus = status,              // "正常运营", "维护中" -> BusinessStatus
-
+                Price = parkingLot?.PARKING_FEE,
+                CapacityOrSpaces = stats.TotalSpaces,
+                BusinessStatus = status,
                 SubType = null
             };
         }
 
-        // ==========================================
-        // 3. 业务变更
-        // 逻辑来源: AreaController.UpdateArea (case "PARKING") + ParkingController.UpdateParkingLotInfo
-        // ==========================================
         public async Task UpdateInfoAsync(AreaConfiguration config)
         {
-            // 1. 更新主表 AREA (EF Core)
-            var areaToUpdate = await _context.AREA.FindAsync(_areaId);
-            if (areaToUpdate != null)
+            // 1. 更新基表 (Area)
+            var area = await _areaRepository.GetAreaByIdAsync(_areaId);
+            if (area != null)
             {
-                if (config.IsEmpty.HasValue) areaToUpdate.ISEMPTY = config.IsEmpty.Value;
-                if (config.AreaSize.HasValue) areaToUpdate.AREA_SIZE = config.AreaSize.Value;
-
-                _context.Entry(areaToUpdate).State = EntityState.Modified;
-                await _context.SaveChangesAsync();
-
-                // [关键修复]：更新完基表后，立即将其从追踪器中分离！
-                // 否则后续查询 ParkingLot 时，EF 会试图把这个 Area 对象强转为 ParkingLot，导致报错。
-                _context.Entry(areaToUpdate).State = EntityState.Detached;
+                if (config.IsEmpty.HasValue) area.ISEMPTY = config.IsEmpty.Value;
+                if (config.AreaSize.HasValue) area.AREA_SIZE = config.AreaSize.Value;
+                _areaRepository.Update(area);
+                await _areaRepository.SaveChangesAsync();
             }
 
-            // 2. 更新 PARKING_LOT 表及内存状态
-            var parkingLotExists = await _context.ParkingLotExists(_areaId);
-            int fee = config.Price.HasValue ? (int)config.Price.Value : 0;
-            string status = config.Status ?? "正常运营";
+            // 2. 更新子表 (ParkingLot) - 数据库层面
+            await _areaRepository.UpsertParkingLotAsync(
+                _areaId,
+                config.Status ?? "正常运营",
+                config.Price ?? 0);
 
-            if (!parkingLotExists)
-            {
-                // 逻辑搬运: 子表缺失，执行 SQL 插入
-                await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"INSERT INTO PARKING_LOT (AREA_ID, PARKING_FEE) VALUES ({_areaId}, {fee})");
-
-                // 插入后调用 Update 确保内存状态同步
-                // 此时 EF 追踪器是干净的，它会从数据库重新加载 ParkingLot 对象，不会报错
-                await _context.UpdateParkingLotInfo(_areaId, fee, status);
-            }
-            else
-            {
-                // ... (略)
-                await _context.UpdateParkingLotInfo(_areaId, fee, status);
-            }
+            // 3. 同步到 ParkingRepository 的内存状态 (Status/Fee)
+            await _parkingRepository.UpdateParkingLotInfoAsync(
+                _areaId,
+                (int)(config.Price ?? 0),
+                config.Status ?? "正常运营");
         }
 
-
-        // ==========================================
-        // 4. 删除校验
-        // 逻辑来源: AreaController.DeleteArea
-        // ==========================================
         public async Task<string?> ValidateDeleteConditionAsync()
         {
-            // 逻辑搬运: "无法删除：请先清理该停车场上的停车位。"
-            // 检查 PARKING_SPACE_DISTRIBUTION 表
-            var hasParkingSpaces = await _context.PARKING_SPACE_DISTRIBUTION
-                .FirstOrDefaultAsync(rs => rs.AREA_ID == _areaId);
-
-            if (hasParkingSpaces != null)
-            {
-                return "无法删除：请先清理该停车场上的停车位。";
-            }
-
-            return null; // 允许删除
+            return await _areaRepository.HasParkingDependencyAsync(_areaId)
+                ? "无法删除：请先清理该停车场上的停车位。" : null;
         }
     }
 }

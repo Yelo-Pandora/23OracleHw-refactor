@@ -2,11 +2,12 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
-using System.ComponentModel.DataAnnotations;
 using oracle_backend.patterns.Composite_Pattern.Component;
-using oracle_backend.patterns.Composite_Pattern.Leaf;
 using oracle_backend.patterns.Composite_Pattern.Container;
+using oracle_backend.patterns.Composite_Pattern.Leaf;
+using oracle_backend.Patterns.Repository.Implementations;
 using oracle_backend.Patterns.Repository.Interfaces;
+using System.ComponentModel.DataAnnotations;
 
 namespace oracle_backend.Controllers
 {
@@ -52,6 +53,7 @@ namespace oracle_backend.Controllers
         //private readonly AccountDbContext _accountContext;
         private readonly IParkingRepository _parkingRepo;
         private readonly IAccountRepository _accountRepo;
+        private readonly IAreaRepository _areaRepo;
         private readonly ILogger<ParkingController> _logger;
 
         public ParkingController(
@@ -59,12 +61,14 @@ namespace oracle_backend.Controllers
             //AccountDbContext accountContext, 
             IParkingRepository parkingRepo,
             IAccountRepository accountRepo,
+            IAreaRepository areaRepo,
             ILogger<ParkingController> logger)
         {
             _parkingContext = parkingContext;
             //_accountContext = accountContext;
             _parkingRepo = parkingRepo;
             _accountRepo = accountRepo;
+            _areaRepo = areaRepo;
             _logger = logger;
         }
 
@@ -411,7 +415,7 @@ namespace oracle_backend.Controllers
                 }
 
                 // 2. [Composite] 构建 Leaf
-                IAreaComponent component = new ParkingLeaf(_parkingContext, areaId);
+                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, areaId);
 
                 // 3. [Composite] 调用接口
                 var details = await component.GetDetailsAsync();
@@ -553,7 +557,7 @@ namespace oracle_backend.Controllers
                 }
 
                 // [Composite] 构建 Leaf
-                IAreaComponent component = new ParkingLeaf(_parkingContext, areaId);
+                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, areaId);
 
                 if (!await _parkingRepo.ParkingLotExistsAsync(areaId))
                     return BadRequest(new { error = "停车场不存在" });
@@ -648,7 +652,7 @@ namespace oracle_backend.Controllers
                 }
 
                 // [Composite] 构建 Leaf
-                IAreaComponent component = new ParkingLeaf(_parkingContext, dto.AreaId);
+                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, dto.AreaId);
 
                 if (!await _parkingRepo.ParkingLotExistsAsync(dto.AreaId))
                     return BadRequest(new { error = "停车场不存在" });
@@ -817,7 +821,7 @@ namespace oracle_backend.Controllers
                     try
                     {
                         // [Composite] 构建 Leaf
-                        IAreaComponent leaf = new ParkingLeaf(_parkingContext, lot.AREA_ID);
+                        IAreaComponent leaf = new ParkingLeaf(_areaRepo, _parkingRepo, lot.AREA_ID);
 
                         // [Composite] 获取详情
                         var info = await leaf.GetDetailsAsync();
@@ -2142,7 +2146,7 @@ namespace oracle_backend.Controllers
                     if (!await _parkingContext.ParkingLotExists(dto.AreaId.Value))
                         return BadRequest(new { error = "停车场不存在" });
 
-                    component = new ParkingLeaf(_parkingContext, dto.AreaId.Value);
+                    component = new ParkingLeaf(_areaRepo, _parkingRepo, dto.AreaId.Value);
                     areaName = $"停车场{dto.AreaId.Value}";
                 }
                 else
@@ -2156,7 +2160,7 @@ namespace oracle_backend.Controllers
                     var container = new AreaContainer("所有停车场容器");
                     foreach (var id in allAreaIds)
                     {
-                        container.Add(new ParkingLeaf(_parkingContext, id));
+                        container.Add(new ParkingLeaf(_areaRepo, _parkingRepo, id));
                     }
                     component = container;
                 }
