@@ -74,6 +74,7 @@ namespace oracle_backend
 
             // 注册服务
             builder.Services.AddScoped<SaleEventService>();
+            builder.Services.AddScoped<IParkingRepository, ParkingRepository>();
             builder.Services.AddScoped<ISaleEventService, SaleEventService>();
             builder.Services.AddScoped<IAccountRepository, AccountRepository>();
             builder.Services.AddScoped<IStoreRepository, StoreRepository>();

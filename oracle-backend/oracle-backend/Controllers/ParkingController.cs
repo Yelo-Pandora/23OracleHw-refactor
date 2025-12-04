@@ -2618,8 +2618,9 @@ namespace oracle_backend.Controllers
             try
             {
                 // 获取基础统计数据
-                var baseStats = await GetRealParkingStatistics(startDate, endDate, areaId);
-                
+                //var baseStats = await GetRealParkingStatistics(startDate, endDate, areaId);
+                var baseStats = await _parkingRepo.GetParkingStatisticsReportAsync(startDate, endDate, areaId);
+
                 // 计算高峰时段车位利用率
                 var peakUtilization = await CalculatePeakHourUtilization(startDate, endDate, areaId);
                 
