@@ -16,26 +16,33 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class StaffController : ControllerBase
     {
-        private readonly CollaborationDbContext _collabContext;
-        private readonly AccountDbContext _accountContext;
-        private readonly ComplexDbContext _eventContext;
+        //private readonly CollaborationDbContext _collabContext;
+        //private readonly ComplexDbContext _eventContext;
+        private readonly AccountDbContext _accountContext;//这个DbContext仍需保留，有一个函数用到
+
+        private readonly ICollaborationRepository _collabRepo;
+        private readonly IAccountRepository _accountRepo;
+        private readonly IVenueEventRepository _eventRepo;
+
         private readonly ILogger<StaffController> _logger;
         private readonly ILogger<AccountController> _accountLogger;
-        private readonly SaleEventService _saleEventService;
 
-        // 注入 IAccountRepository
-        private readonly IAccountRepository _accountRepo;
         public StaffController(
-            CollaborationDbContext collabContext,
-            ComplexDbContext eventContext,
+            //CollaborationDbContext collabContext,
+            //ComplexDbContext eventContext,
             AccountDbContext accountContext,
+            ICollaborationRepository collabRepo,
+            IAccountRepository accountRepo,
+            IVenueEventRepository eventRepo,
             ILogger<StaffController> logger,
-            ILogger<AccountController> accountLogger,
-            IAccountRepository accountRepo)
+            ILogger<AccountController> accountLogger)
         {
-            _collabContext = collabContext;
-            _eventContext = eventContext;
+            //_collabContext = collabContext;
+            //_eventContext = eventContext;
             _accountContext = accountContext;
+            _collabRepo = collabRepo;
+            _accountRepo = accountRepo;
+            _eventRepo = eventRepo;
             _logger = logger;
             _accountLogger = accountLogger;
             _accountRepo = accountRepo;
@@ -47,7 +54,7 @@ namespace oracle_backend.Controllers
         // =========================================================================
         private IPersonComponent CreateStaffComponent(int staffId)
         {
-            return new StaffLeaf(_collabContext, _accountContext, _eventContext, staffId);
+            return new StaffLeaf(_collabRepo, _accountRepo, _eventRepo, staffId);
         }
 
         // DTO:
@@ -104,13 +111,13 @@ namespace oracle_backend.Controllers
         private async Task<bool> CheckPermission(string operatorAccountId, int requiredAuthority)
         {
             // 检查账号是否存在
-            var account = await _accountContext.FindAccount(operatorAccountId);
+            var account = await _accountRepo.FindAccountByUsername(operatorAccountId);
             // 检查权限
-            bool hasPermission = await _accountContext.CheckAuthority(operatorAccountId, requiredAuthority);
+            bool hasPermission = await _accountRepo.CheckAuthority(operatorAccountId, requiredAuthority);
             if (!hasPermission)
             {
                 // 检查临时权限
-                var tempPermission = await _accountContext.FindTempAuthorities(operatorAccountId);
+                var tempPermission = await _accountRepo.FindTempAuthorities(operatorAccountId);
                 hasPermission = tempPermission.Any(ta =>
                     ta.TEMP_AUTHORITY.HasValue &&
                     ta.TEMP_AUTHORITY.Value <= requiredAuthority);
@@ -125,13 +132,13 @@ namespace oracle_backend.Controllers
         // 目前权限等级(取temp authority与authority中更小值)
         private async Task<int> GetCurrentAuthorityLevel(string operatorAccountId)
         {
-            var account = await _accountContext.FindAccount(operatorAccountId);
+            var account = await _accountRepo.FindAccountByUsername(operatorAccountId);
             if (account == null)
             {
                 return 0; // 无权限
             }
 
-            var tempAuthority = await _accountContext.FindTempAuthorities(operatorAccountId);
+            var tempAuthority = await _accountRepo.FindTempAuthorities(operatorAccountId);
             var currentAuthority = account.AUTHORITY;
 
             if (tempAuthority.Any())
@@ -154,7 +161,7 @@ namespace oracle_backend.Controllers
             else if (!isAdmin && isManager)
             {
                 // 查看manager的部门
-                Staff manager = await _collabContext.FindStaffByAccount(operatorAccount);
+                Staff manager = await _collabRepo.FindStaffByAccountAsync(operatorAccount);
                 if (manager == null)
                 {
                     return BadRequest("无效的操作员账号");
@@ -172,7 +179,7 @@ namespace oracle_backend.Controllers
         [HttpGet("AllStaffs")]
         public async Task<IActionResult> GetAllStaffs()
         {
-            var staffs = await _collabContext.Staffs.ToListAsync();
+            var staffs = await _collabRepo.GetAllStaffsAsync();
             return Ok(staffs);
         }
 
@@ -180,7 +187,7 @@ namespace oracle_backend.Controllers
         [HttpGet("AllsalarySlip")]
         public async Task<IActionResult> GetAllsalarySlip()
         {
-            var salarySlip = await _collabContext.SalarySlips.ToListAsync();
+            var salarySlip = await _collabRepo.GetAllSalarySlipsAsync();
             return Ok(salarySlip);
         }
 
@@ -188,7 +195,7 @@ namespace oracle_backend.Controllers
         [HttpGet("AllMonthSalaryCost")]
         public async Task<IActionResult> GetAllMonthSalaryCost()
         {
-            var monthSalaryCost = await _collabContext.MonthSalaryCosts.ToListAsync();
+            var monthSalaryCost = await _collabRepo.GetAllSalarySlipsAsync();
             return Ok(monthSalaryCost);
         }
 
@@ -219,7 +226,7 @@ namespace oracle_backend.Controllers
             try
             {
                 // 自动生成员工ID
-                var maxStaffId = await _collabContext.Staffs.MaxAsync(s => (int?)s.STAFF_ID) ?? 0;
+                var maxStaffId = await _collabRepo.GetMaxStaffIdAsync();
                 var newStaffId = maxStaffId + 1;
                 var staff = new Staff
                 {
@@ -249,8 +256,8 @@ namespace oracle_backend.Controllers
                 }
 
                 // 添加员工
-                _collabContext.Staffs.Add(staff);
-                await _collabContext.SaveChangesAsync();
+                await _collabRepo.AddStaffAsync(staff);
+                await _collabRepo.SaveChangesAsync();
 
                 // 建立员工与账号关联
                 var staffAccount = new StaffAccount
@@ -258,8 +265,8 @@ namespace oracle_backend.Controllers
                     STAFF_ID = newStaffId,
                     ACCOUNT = accountStr
                 };
-                _accountContext.STAFF_ACCOUNT.Add(staffAccount);
-                await _accountContext.SaveChangesAsync();
+                await _accountRepo.AddStaffAccountLink(staffAccount);
+                await _accountRepo.SaveChangesAsync();
                 _accountLogger.LogInformation($"员工与账号关联: ID={staff.STAFF_ID}, 账号={accountStr}");
 
                 return Ok(new { message = "添加成功", id = staff.STAFF_ID, account = accountStr });
@@ -327,7 +334,7 @@ namespace oracle_backend.Controllers
             [FromQuery] int newAuthority)
         {
             // 1. 基础检查 (保持 Controller 的 HTTP 适配层职责)
-            var staff = await _collabContext.FindStaffById(staffId);
+            var staff = await _collabRepo.FindStaffByIdAsync(staffId);
             if (staff == null) return BadRequest("员工不存在");
 
             var Permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
@@ -335,7 +342,7 @@ namespace oracle_backend.Controllers
 
             // 权限大小比较逻辑保留在 Controller，因为这是"操作者"是否有权发起请求的验证
             var currentAuthority = await GetCurrentAuthorityLevel(operatorAccount);
-            var staffAccount = await _accountContext.AccountFromStaffID(staffId);
+            var staffAccount = await _accountRepo.AccountFromStaffID(staffId);
             var staffAuthority = await GetCurrentAuthorityLevel(staffAccount.ACCOUNT);
 
             if (currentAuthority >= staffAuthority) return BadRequest("操作员权限要高于被修改员工的权限");
@@ -429,14 +436,14 @@ namespace oracle_backend.Controllers
             [FromQuery, Required] string operatorAccount,
             [FromBody] StaffDto dto)
         {
-            var staff = await _collabContext.FindStaffById(staffId);
+            var staff = await _collabRepo.FindStaffByIdAsync(staffId);
             if (staff == null) return NotFound("员工不存在");
 
             // 判断操作员身份
-            var operatorAccountObj = await _accountContext.FindAccount(operatorAccount);
+            var operatorAccountObj = await _accountRepo.FindAccountByUsername(operatorAccount);
             if (operatorAccountObj == null) return BadRequest("操作员账号不存在");
 
-            var staffAccount = await _accountContext.CheckStaff(operatorAccount);
+            var staffAccount = await _accountRepo.CheckStaff(operatorAccount);
             bool isSelf = staffAccount != null && staffAccount.STAFF_ID == staffId;
             var isAdmin = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
 
@@ -551,7 +558,7 @@ namespace oracle_backend.Controllers
             [FromQuery] DateTime monthTime,
             [FromBody] SalaryDto dto)
         {
-            var staff = await _collabContext.FindStaffById(staffId);
+            var staff = await _collabRepo.FindStaffByIdAsync(staffId);
             if (staff == null) return NotFound("员工不存在");
 
             var permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
@@ -649,10 +656,10 @@ namespace oracle_backend.Controllers
             [FromBody, Required] TempAuthorityDto dto)
         {
             // 基础校验
-            var account = await _accountContext.FindAccount(dto.account);
+            var account = await _accountRepo.FindAccountByUsername(dto.account);
             if (account == null) return NotFound("账号不存在");
 
-            var staff = await _collabContext.FindStaffByAccount(dto.account);
+            var staff = await _collabRepo.FindStaffByAccountAsync(dto.account);
             if (staff == null) return NotFound("员工不存在");
 
             var permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
@@ -726,7 +733,7 @@ namespace oracle_backend.Controllers
             [FromQuery, Required] string staffAccount,
             [FromQuery, Required] int eventId)
         {
-            var staff = await _collabContext.FindStaffByAccount(staffAccount);
+            var staff = await _collabRepo.FindStaffByAccountAsync(staffAccount);
             if (staff == null) return NotFound("员工不存在");
 
             var permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
