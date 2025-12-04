@@ -6,6 +6,7 @@ using System.ComponentModel.DataAnnotations;
 using oracle_backend.patterns.Composite_Pattern.Component;
 using oracle_backend.patterns.Composite_Pattern.Leaf;
 using oracle_backend.patterns.Composite_Pattern.Container;
+using oracle_backend.Patterns.Repository.Interfaces;
 
 namespace oracle_backend.Controllers
 {
@@ -48,13 +49,22 @@ namespace oracle_backend.Controllers
          *    - GET /api/Parking/DiagnoseParkingData - 数据诊断
          */
         private readonly ParkingContext _parkingContext;
-        private readonly AccountDbContext _accountContext;
+        //private readonly AccountDbContext _accountContext;
+        private readonly IParkingRepository _parkingRepo;
+        private readonly IAccountRepository _accountRepo;
         private readonly ILogger<ParkingController> _logger;
 
-        public ParkingController(ParkingContext parkingContext, AccountDbContext accountContext, ILogger<ParkingController> logger)
+        public ParkingController(
+            ParkingContext parkingContext,
+            //AccountDbContext accountContext, 
+            IParkingRepository parkingRepo,
+            IAccountRepository accountRepo,
+            ILogger<ParkingController> logger)
         {
             _parkingContext = parkingContext;
-            _accountContext = accountContext;
+            //_accountContext = accountContext;
+            _parkingRepo = parkingRepo;
+            _accountRepo = accountRepo;
             _logger = logger;
         }
 
@@ -67,7 +77,7 @@ namespace oracle_backend.Controllers
             {
                 _logger.LogInformation("开始检查账号权限：{OperatorAccount}", operatorAccount);
                 
-                var account = await _accountContext.FindAccount(operatorAccount);
+                var account = await _accountRepo.FindAccountByUsername(operatorAccount);
                 if (account == null)
                 {
                     _logger.LogWarning("账号 {OperatorAccount} 不存在", operatorAccount);
@@ -396,7 +406,7 @@ namespace oracle_backend.Controllers
                 // 1. 权限验证
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    if (!await _accountContext.CheckAuthority(operatorAccount, 2))
+                    if (!await _accountRepo.CheckAuthority(operatorAccount, 2))
                         return BadRequest(new { error = "权限不足" });
                 }
 
@@ -545,7 +555,7 @@ namespace oracle_backend.Controllers
                 // [Composite] 构建 Leaf
                 IAreaComponent component = new ParkingLeaf(_parkingContext, areaId);
 
-                if (!await _parkingContext.ParkingLotExists(areaId))
+                if (!await _parkingRepo.ParkingLotExistsAsync(areaId))
                     return BadRequest(new { error = "停车场不存在" });
 
                 // [Composite] 构造配置包
@@ -633,14 +643,14 @@ namespace oracle_backend.Controllers
             {
                 if (!string.IsNullOrEmpty(dto.OperatorAccount))
                 {
-                    if (!await _accountContext.CheckAuthority(dto.OperatorAccount, 1))
+                    if (!await _accountRepo.CheckAuthority(dto.OperatorAccount, 1))
                         return BadRequest(new { error = "权限不足" });
                 }
 
                 // [Composite] 构建 Leaf
                 IAreaComponent component = new ParkingLeaf(_parkingContext, dto.AreaId);
 
-                if (!await _parkingContext.ParkingLotExists(dto.AreaId))
+                if (!await _parkingRepo.ParkingLotExistsAsync(dto.AreaId))
                     return BadRequest(new { error = "停车场不存在" });
 
                 // [Composite] 构造配置包：强制将 Status 设为 "维护中"
@@ -688,7 +698,7 @@ namespace oracle_backend.Controllers
         //        // 验证操作员权限（员工/商户/管理员都可以查询）
         //        if (!string.IsNullOrEmpty(operatorAccount))
         //        {
-        //            var account = await _accountContext.FindAccount(operatorAccount);
+        //            var account = await _accountRepo.FindAccountByUsername(operatorAccount);
         //            if (account == null || account.AUTHORITY > 5)
         //            {
         //                _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
@@ -794,7 +804,7 @@ namespace oracle_backend.Controllers
             {
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var acc = await _accountContext.FindAccount(operatorAccount);
+                    var acc = await _accountRepo.FindAccountByUsername(operatorAccount);
                     if (acc == null || acc.AUTHORITY > 5)
                         return BadRequest(new { success = false, error = "权限不足" });
                 }
@@ -863,7 +873,7 @@ namespace oracle_backend.Controllers
                 // 验证操作员权限
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var account = await _accountContext.FindAccount(operatorAccount);
+                    var account = await _accountRepo.FindAccountByUsername(operatorAccount);
                     if (account == null || account.AUTHORITY > 5)
                     {
                         _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
@@ -878,7 +888,7 @@ namespace oracle_backend.Controllers
                     _logger.LogInformation("查询指定停车场 {AreaId} 的车位状态", areaId.Value);
                     
                     // 查询指定停车场
-                    var parkingLotExists = await _parkingContext.ParkingLotExists(areaId.Value);
+                    var parkingLotExists = await _parkingRepo.ParkingLotExistsAsync(areaId.Value);
                     if (!parkingLotExists)
                     {
                         _logger.LogWarning("停车场区域 {AreaId} 不存在", areaId.Value);
@@ -886,7 +896,7 @@ namespace oracle_backend.Controllers
                     }
 
                     _logger.LogInformation("停车场 {AreaId} 存在，开始查询车位状态", areaId.Value);
-                    var spaces = await _parkingContext.GetParkingSpaceStatuses(areaId.Value);
+                    var spaces = await _parkingRepo.GetParkingSpaceStatusesAsync(areaId.Value);
                     _logger.LogInformation("查询到 {Count} 个车位状态", spaces.Count);
                     
                     foreach (var space in spaces)
@@ -909,7 +919,7 @@ namespace oracle_backend.Controllers
                     var allParkingLots = await _parkingContext.PARKING_LOT.ToListAsync();
                     foreach (var lot in allParkingLots)
                     {
-                        var spaces = await _parkingContext.GetParkingSpaceStatuses(lot.AREA_ID);
+                        var spaces = await _parkingRepo.GetParkingSpaceStatusesAsync(lot.AREA_ID);
                         foreach (var space in spaces)
                         {
                             allSpaces.Add(new
@@ -968,7 +978,7 @@ namespace oracle_backend.Controllers
                 // 验证操作员权限
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var account = await _accountContext.FindAccount(operatorAccount);
+                    var account = await _accountRepo.FindAccountByUsername(operatorAccount);
                     if (account == null || account.AUTHORITY > 5)
                     {
                         _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
@@ -1002,7 +1012,7 @@ namespace oracle_backend.Controllers
                     .FirstOrDefaultAsync();
 
                 // 安全地获取占用状态，避免直接布尔比较
-                var isOccupied = !await _parkingContext.IsParkingSpaceAvailable(parkingSpaceId);
+                var isOccupied = !await _parkingRepo.IsParkingSpaceAvailableAsync(parkingSpaceId);
                 
                 var response = new
                 {
@@ -1056,14 +1066,14 @@ namespace oracle_backend.Controllers
             try
             {
                 // 权限校验：管理员
-                var hasPermission = await _accountContext.CheckAuthority(dto.OperatorAccount, 1);
+                var hasPermission = await _accountRepo.CheckAuthority(dto.OperatorAccount, 1);
                 if (!hasPermission)
                 {
                     return BadRequest(new { error = "权限不足，需要管理员权限" });
                 }
 
                 // 调用重写的VehicleEntry方法
-                var (success, message) = await _parkingContext.VehicleEntry(dto.LicensePlateNumber, dto.ParkingSpaceId);
+                var (success, message) = await _parkingRepo.VehicleEntryAsync(dto.LicensePlateNumber, dto.ParkingSpaceId);
                 if (!success)
                 {
                     return BadRequest(new { error = message });
@@ -1112,13 +1122,13 @@ namespace oracle_backend.Controllers
 
             try
             {
-                var hasPermission = await _accountContext.CheckAuthority(dto.OperatorAccount, 1);
+                var hasPermission = await _accountRepo.CheckAuthority(dto.OperatorAccount, 1);
                 if (!hasPermission)
                 {
                     return BadRequest(new { error = "权限不足，需要管理员权限" });
                 }
 
-                var result = await _parkingContext.VehicleExit(dto.LicensePlateNumber);
+                var result = await _parkingRepo.VehicleExitAsync(dto.LicensePlateNumber);
                 if (result == null)
                 {
                     return NotFound(new { error = "未找到车辆当日停车记录" });
@@ -1156,13 +1166,13 @@ namespace oracle_backend.Controllers
 
             try
             {
-                var hasPermission = await _accountContext.CheckAuthority(operatorAccount, 1);
+                var hasPermission = await _accountRepo.CheckAuthority(operatorAccount, 1);
                 if (!hasPermission)
                 {
                     return BadRequest(new { error = "权限不足，需要管理员权限" });
                 }
 
-                var ok = await _parkingContext.ProcessParkingPayment(request);
+                var ok = await _parkingRepo.ProcessParkingPaymentAsync(request);
                 if (!ok)
                 {
                     return BadRequest(new { error = "支付处理失败" });
@@ -1211,7 +1221,7 @@ namespace oracle_backend.Controllers
                 foreach (var areaId in parkingLotIds)
                 {
                     // 获取状态
-                    var status = _parkingContext.GetParkingLotStatus(areaId);
+                    var status = _parkingRepo.GetParkingLotStatusAsync(areaId);
                     configs.Add(new
                     {
                         ConfigKey = $"parking_status_{areaId}",
@@ -1221,7 +1231,7 @@ namespace oracle_backend.Controllers
                     });
                     
                     // 获取车位数
-                    var spaceCount = _parkingContext.GetParkingLotSpaceCount(areaId).Result;
+                    var spaceCount = _parkingRepo.GetParkingLotSpaceCountAsync(areaId).Result;
                     configs.Add(new
                     {
                         ConfigKey = $"parking_space_count_{areaId}",
@@ -1263,17 +1273,17 @@ namespace oracle_backend.Controllers
                 switch (status.ToLower())
                 {
                     case "paid":
-                        records = await _parkingContext.GetPaidParkingRecords();
+                        records = await _parkingRepo.GetPaymentRecordsAsync("paid");
                         message = $"获取到{records.Count}条已支付记录";
                         break;
                     case "unpaid":
-                        records = await _parkingContext.GetUnpaidParkingRecords();
+                        records = await  _parkingRepo.GetUnpaidParkingRecordsAsync();
                         message = $"获取到{records.Count}条未支付记录";
                         break;
                     case "all":
                     default:
-                        var paidRecords = await _parkingContext.GetPaidParkingRecords();
-                        var unpaidRecords = await _parkingContext.GetUnpaidParkingRecords();
+                        var paidRecords = await _parkingRepo.GetPaymentRecordsAsync("paid");
+                        var unpaidRecords = await _parkingRepo.GetPaymentRecordsAsync("unpaid");
                         records = paidRecords.Concat(unpaidRecords).ToList();
                         message = $"获取到{paidRecords.Count}条已支付记录，{unpaidRecords.Count}条未支付记录";
                         break;
@@ -1305,7 +1315,7 @@ namespace oracle_backend.Controllers
         {
             try
             {
-                var parkingLots = await _parkingContext.GetParkingLotList();
+                var parkingLots = await _parkingRepo.GetParkingLotListAsync();
                 
                 return Ok(new ApiResponseDto<List<dynamic>>
                 {
@@ -1332,8 +1342,8 @@ namespace oracle_backend.Controllers
                 if (areaId.HasValue)
                 {
                     // 查询指定停车场
-                    var currentVehicles = await _parkingContext.GetCurrentVehiclesByParkingLot(areaId.Value);
-                    
+                    var currentVehicles = await _parkingRepo.GetCurrentVehiclesAsync(areaId);
+
                     if (currentVehicles.Count == 0)
                     {
                         return Ok(new ApiResponseDto<List<Models.VehicleStatusResult>>
@@ -1397,8 +1407,8 @@ namespace oracle_backend.Controllers
                     return BadRequest(new { error = "车牌号不能为空" });
                 }
 
-                var vehicleStatus = await _parkingContext.GetVehicleStatusByLicensePlate(licensePlate.Trim().ToUpper());
-                
+                var vehicleStatus = await _parkingRepo.GetVehicleStatusByLicensePlateAsync(licensePlate.Trim().ToUpper());
+
                 if (vehicleStatus == null)
                 {
                     return Ok(new ApiResponseDto<Models.VehicleStatusResult>
@@ -1448,7 +1458,7 @@ namespace oracle_backend.Controllers
                 var activeCarsInDb = allCarsInDb.Where(c => !c.PARK_END.HasValue).ToList();
 
                 // 2. 查询内存中的支付记录
-                var paymentRecordsInMemory = await _parkingContext.GetPaymentRecordsInTimeRange(start, end);
+                var paymentRecordsInMemory = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(start, end);
 
                 // 3. 查询PARK表记录
                 var parkRecordsInDb = await _parkingContext.PARK
@@ -1856,7 +1866,7 @@ namespace oracle_backend.Controllers
                 var end = endDate ?? DateTime.Today.AddDays(1);
 
                 // 获取内存中的支付记录
-                var paymentRecords = await _parkingContext.GetPaymentRecordsInTimeRange(start, end);
+                var paymentRecords = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(start, end);
 
                 return Ok(new ApiResponseDto<object>
                 {
@@ -2171,9 +2181,7 @@ namespace oracle_backend.Controllers
                 int totalCount = recordList.Count;
                 decimal totalRevenue = (decimal)recordList.Sum(r => r.Amount);
 
-                // 原逻辑中 CashFlowRecord 没有时长信息，如果需要精确时长，
-                // 可以在 ParkingLeaf 中把 Hours 塞进 Description 或 Amount 计算反推，
-                // 或者扩展 CashFlowRecord。这里保持逻辑一致性，暂设为 0 或基于假设。
+                // 原逻辑中 CashFlowRecord 没有时长信息
                 double avgHours = 0;
 
                 // 4.2 生成每日统计 (Daily Statistics)
@@ -2295,7 +2303,7 @@ namespace oracle_backend.Controllers
                 Console.WriteLine($"[DEBUG] EF Core查询结果: 出场记录数={totalExitCount}");
 
                 // 统计内存中的支付记录
-                var paymentRecordsInTimeRange = await _parkingContext.GetPaymentRecordsInTimeRange(startDate, endDate);
+                var paymentRecordsInTimeRange = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(startDate, endDate);
                 var paymentRecordsCount = paymentRecordsInTimeRange.Count;
 
                 _logger.LogInformation("[DEBUG] 内存中支付记录数：{Count}", paymentRecordsCount);
@@ -2758,7 +2766,7 @@ namespace oracle_backend.Controllers
                 Console.WriteLine($"[DEBUG] 查询到 {parkingRecords.Count} 条停车记录");
 
                 // 获取支付记录信息
-                var paymentRecords = await _parkingContext.GetPaymentRecordsInTimeRange(startDate, endDate);
+                var paymentRecords = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(startDate, endDate);
                 var paymentRecordsDict = paymentRecords.ToDictionary(
                     pr => $"{pr.LicensePlateNumber}_{pr.ParkStart:yyyyMMddHHmmss}",
                     pr => pr
