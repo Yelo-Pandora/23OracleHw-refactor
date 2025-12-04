@@ -1,13 +1,7 @@
-﻿using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Migrations.Operations;
-using Microsoft.OpenApi.Models;
-using Oracle.ManagedDataAccess.Client;
-using oracle_backend.Dbcontexts;
+﻿using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
+using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
-using static Microsoft.EntityFrameworkCore.DbLoggerCategory;
 
 namespace oracle_backend.Controllers
 {
@@ -15,53 +9,52 @@ namespace oracle_backend.Controllers
     [Route("api/[controller]")]
     public class EquipmentController : ControllerBase
     {
-        private readonly EquipmentDbContext _context;
-        private readonly AccountDbContext _accountContext;
+        private readonly IEquipmentRepository _equipRepo;
+        private readonly IAccountRepository _accountRepo;
         private readonly ILogger<EquipmentController> _logger;
 
         public EquipmentController(
-            EquipmentDbContext context,
-            ILogger<EquipmentController> logger,
-            AccountDbContext accountContext)
+            IEquipmentRepository equipRepo,
+            IAccountRepository accountRepo,
+            ILogger<EquipmentController> logger)
         {
-            _context = context;
+            _equipRepo = equipRepo;
+            _accountRepo = accountRepo;
             _logger = logger;
-            _accountContext = accountContext;
         }
 
-        //2.9.1 查看设备列表
+        // 2.9.1 查看设备列表
         public class EquipmentListDto
         {
             public int equipment_ID { get; set; }
             public string equipment_TYPE { get; set; }
             public string equipment_STATUS { get; set; }
-            public int area_ID { get; set; }
+            public int? area_ID { get; set; } // int? 以防找不到位置
         }
+
         [HttpGet("EquipmentList")]
-        public async Task<ActionResult<IEnumerable<Equipment>>> GetEquipmentList([FromQuery] string OperatorID)
+        public async Task<ActionResult<IEnumerable<EquipmentListDto>>> GetEquipmentList([FromQuery] string OperatorID)
         {
             _logger.LogInformation("正在读取设备列表信息");
 
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    // 使用 Repository 获取员工信息
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -70,19 +63,18 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 查询设备列表
-                var list = await _context.Equipments
-                    .Select(e => new EquipmentListDto
-                    {
-                        equipment_ID = e.EQUIPMENT_ID,
-                        equipment_TYPE = e.EQUIPMENT_TYPE,
-                        equipment_STATUS = e.EQUIPMENT_STATUS,
-                        area_ID = _context.EquipmentLocations
-                                    .Where(el => el.EQUIPMENT_ID == e.EQUIPMENT_ID)
-                                    .Select(el => el.AREA_ID)
-                                    .FirstOrDefault()
-                    })
-                    .ToListAsync();
+                // 2. 业务逻辑：查询设备列表
+                var equipments = await _equipRepo.GetAllAsync();
+                // 优化：一次性获取所有位置映射
+                var locationMap = await _equipRepo.GetAllEquipmentAreaIdsAsync();
+
+                var list = equipments.Select(e => new EquipmentListDto
+                {
+                    equipment_ID = e.EQUIPMENT_ID,
+                    equipment_TYPE = e.EQUIPMENT_TYPE,
+                    equipment_STATUS = e.EQUIPMENT_STATUS,
+                    area_ID = locationMap.ContainsKey(e.EQUIPMENT_ID) ? locationMap[e.EQUIPMENT_ID] : 0
+                }).ToList();
 
                 if (!list.Any())
                     return NotFound("不存在任何设备");
@@ -96,49 +88,41 @@ namespace oracle_backend.Controllers
             }
         }
 
-
-        //查询具体设备
+        // 查询具体设备
         public class EquipmentDetailDto
         {
-            //设备ID
-            public required int EQUIPMENT_ID { get; set; }
-            //设备类型
+            public int EQUIPMENT_ID { get; set; }
             public string EQUIPMENT_TYPE { get; set; }
-            //设备状态
             public string EQUIPMENT_STATUS { get; set; }
-            //设备接口
             public string? PORT { get; set; }
-            //设备购入花费
             public int? EQUIPMENT_COST { get; set; }
-            //购买时间
             public DateTime BUY_TIME { get; set; }
             public int AREA_ID { get; set; }
         }
+
         [HttpGet("EquipmentDetail")]
-        public async Task<ActionResult<Equipment>> GetEquipmentDetail([FromQuery] int equipmentID, [FromQuery] string OperatorID)
+        public async Task<ActionResult<EquipmentDetailDto>> GetEquipmentDetail([FromQuery] int equipmentID, [FromQuery] string OperatorID)
         {
             _logger.LogInformation("正在查询设备信息");
             try
             {
                 _logger.LogInformation($"收到 OperatorID = {OperatorID}");
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -147,15 +131,16 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(equipmentID);
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(equipmentID);
                 if (equipment == null)
                     return NotFound("未找到该设备");
+
                 if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Offline)
                     return BadRequest("该设备离线，无法获取状态");
-                var area_ID = await _context.EquipmentLocations
-                            .Where(el => el.EQUIPMENT_ID == equipment.EQUIPMENT_ID)
-                            .Select(el => el.AREA_ID)
-                            .FirstOrDefaultAsync();
+
+                var location = await _equipRepo.GetLocationByEquipmentIdAsync(equipment.EQUIPMENT_ID);
+
                 var dto = new EquipmentDetailDto
                 {
                     EQUIPMENT_ID = equipment.EQUIPMENT_ID,
@@ -164,7 +149,7 @@ namespace oracle_backend.Controllers
                     EQUIPMENT_COST = equipment.EQUIPMENT_COST,
                     PORT = equipment.PORT,
                     BUY_TIME = equipment.BUY_TIME,
-                    AREA_ID = area_ID
+                    AREA_ID = location?.AREA_ID ?? 0
                 };
 
                 return Ok(dto);
@@ -176,15 +161,15 @@ namespace oracle_backend.Controllers
             }
         }
 
-        //2.9.2 设备状态常量
+        // 2.9.2 设备状态常量
         public static class EquipmentStatus
         {
             public const string Running = "运行中";
             public const string Faulted = "故障";
-            public const string Offline = "离线";          //设备离线，如断网，无法操作
+            public const string Offline = "离线";
             public const string UnderMaintenance = "维修中";
             public const string Standby = "待机";
-            public const string Discarded = "废弃";        //新增废弃状态，删除设备后的状态
+            public const string Discarded = "废弃";
         }
 
         private static readonly string[] AirConditionerActions = { "关机", "制冷模式", "制热模式", "调节温度", "紧急停止" };
@@ -200,24 +185,21 @@ namespace oracle_backend.Controllers
             _logger.LogInformation($"正在加载设备 {id} 的可操作列表");
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -226,7 +208,8 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(id);
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(id);
                 if (equipment == null)
                     return NotFound("设备不存在");
 
@@ -252,15 +235,12 @@ namespace oracle_backend.Controllers
                         });
                         break;
                     case EquipmentStatus.UnderMaintenance:
-                        actions.Add("当前状态不可操作");
-                        break;
                     case EquipmentStatus.Faulted:
                         actions.Add("当前状态不可操作");
                         break;
                     case EquipmentStatus.Discarded:
                         actions.Add("设备已废弃，不可操作");
                         break;
-
                 }
                 return Ok(actions);
             }
@@ -274,35 +254,32 @@ namespace oracle_backend.Controllers
         public class EquipmentOperationDto
         {
             public int EquipmentID { get; set; }
-            public string OperatorID { get; set; }  //操作员
-            public string Operation { get; set; }     //操作类型
+            public string OperatorID { get; set; }
+            public string Operation { get; set; }
         }
 
-        //操作设备
+        // 操作设备
         [HttpPost("operate")]
         public async Task<IActionResult> OperateEquipment([FromBody] EquipmentOperationDto dto)
         {
             _logger.LogInformation($"正在操作设备{dto.EquipmentID}:{dto.Operation}");
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(dto.OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(dto.OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(dto.OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -311,13 +288,13 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(dto.EquipmentID);
-                if (equipment == null)
-                    return NotFound("未找到该设备");
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentID);
+                if (equipment == null) return NotFound("未找到该设备");
                 if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Discarded)
                     return BadRequest("该设备已被弃用，无法操作");
-                string originalStatus = equipment.EQUIPMENT_STATUS;
 
+                string originalStatus = equipment.EQUIPMENT_STATUS;
 
                 if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Offline ||
                     equipment.EQUIPMENT_STATUS == EquipmentStatus.UnderMaintenance ||
@@ -326,13 +303,16 @@ namespace oracle_backend.Controllers
                     return BadRequest($"设备当前状态为{equipment.EQUIPMENT_STATUS}，不可操作");
                 }
 
-                //特殊情况，设备制停，转变成故障状态
+                // 特殊情况，设备制停
                 if (dto.Operation == "紧急停止")
                 {
                     equipment.EQUIPMENT_STATUS = EquipmentStatus.Faulted;
-                    _context.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, EquipmentStatus.Faulted);
+                    _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, EquipmentStatus.Faulted);
                     _logger.LogInformation($"设备{dto.EquipmentID}紧急停止成功，状态变更为故障");
-                    await _context.SaveChangesAsync();
+
+                    _equipRepo.Update(equipment);
+                    await _equipRepo.SaveChangesAsync();
+
                     return Ok(new
                     {
                         status = equipment.EQUIPMENT_STATUS,
@@ -345,6 +325,7 @@ namespace oracle_backend.Controllers
                 {
                     return BadRequest("当前状态下不支持此操作");
                 }
+
                 bool result = SimulateDeviceOperation();
 
                 if (result)
@@ -358,7 +339,7 @@ namespace oracle_backend.Controllers
                     if (equipment.EQUIPMENT_STATUS != newStatus)
                     {
                         equipment.EQUIPMENT_STATUS = newStatus;
-                        _context.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, newStatus);
+                        _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, newStatus);
                         _logger.LogInformation($"设备{dto.EquipmentID}状态变更:{originalStatus} -> {newStatus}");
                     }
                     _logger.LogInformation("操作成功:设备={EquipmentId}, 操作员={Operator}, 操作={Operation}",
@@ -366,11 +347,13 @@ namespace oracle_backend.Controllers
                 }
                 else
                 {
-                    _context.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, false, originalStatus, originalStatus);
+                    _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, false, originalStatus, originalStatus);
                     _logger.LogWarning("操作失败:设备={EquipmentId},操作员={Operator},操作={Operation}",
                         dto.EquipmentID, dto.OperatorID, dto.Operation);
                 }
-                await _context.SaveChangesAsync();
+
+                _equipRepo.Update(equipment);
+                await _equipRepo.SaveChangesAsync();
 
                 return result ?
                     Ok(new
@@ -430,12 +413,12 @@ namespace oracle_backend.Controllers
             return true;
         }
 
-        //简单模拟，操作成功概率是90%
         private bool SimulateDeviceOperation()
         {
             Random rand = new Random();
             return rand.Next(1, 101) <= 90;
         }
+
         public class RepairOrderDto
         {
             public string OperatorID { get; set; }
@@ -445,13 +428,9 @@ namespace oracle_backend.Controllers
         public class RepairOrderDetailDto
         {
             public int EQUIPMENT_ID { get; set; }
-            //员工ID
             public int STAFF_ID { get; set; }
-            //维修开始时间
             public DateTime REPAIR_START { get; set; }
-            //维修结束时间
             public DateTime REPAIR_END { get; set; }
-            //维修花费
             public double REPAIR_COST { get; set; }
         }
 
@@ -461,25 +440,21 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在查询工单列表");
             try
             {
-
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(dto.OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(dto.OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(dto.OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -488,31 +463,21 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(dto.EquipmentID);
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentID);
                 if (equipment == null)
                     return NotFound($"设备ID={dto.EquipmentID} 不存在");
 
-                var repairOrders = _context.RepairOrders
-                    .Where(r => r.EQUIPMENT_ID == dto.EquipmentID);
+                var repairOrders = await _equipRepo.GetRepairOrdersByEquipmentIdAsync(dto.EquipmentID, dto.inProgressOnly);
 
-                if (dto.inProgressOnly)
+                var resultList = repairOrders.Select(r => new RepairOrderDetailDto
                 {
-                    repairOrders = repairOrders.Where(r => r.REPAIR_END == default(DateTime));
-                }
-
-                var resultList = await repairOrders
-                    .Select(r => new RepairOrderDetailDto
-                    {
-                        EQUIPMENT_ID = r.EQUIPMENT_ID,
-                        STAFF_ID = r.STAFF_ID,
-                        REPAIR_START = r.REPAIR_START,
-                        REPAIR_END = r.REPAIR_END,
-                        REPAIR_COST = r.REPAIR_COST
-                    })
-                    .ToListAsync();
-
-                if (!resultList.Any())
-                    return Ok(new List<RepairOrderDetailDto>());
+                    EQUIPMENT_ID = r.EQUIPMENT_ID,
+                    STAFF_ID = r.STAFF_ID,
+                    REPAIR_START = r.REPAIR_START,
+                    REPAIR_END = r.REPAIR_END,
+                    REPAIR_COST = r.REPAIR_COST
+                }).ToList();
 
                 return Ok(resultList);
             }
@@ -522,13 +487,13 @@ namespace oracle_backend.Controllers
                 return StatusCode(500, "服务器内部错误");
             }
         }
-        //2.9.3 创建工单
-        //DTO类
+
+        // 2.9.3 创建工单
         public class CreateOrderDto
         {
             public string OperatorID { get; set; }
             public int EquipmentId { get; set; }
-            public string FaultDescription { get; set; } //故障描述
+            public string FaultDescription { get; set; }
         }
 
         public class CompleteRepairDto
@@ -554,24 +519,21 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在创建工单");
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(dto.OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(dto.OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(dto.OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -580,7 +542,8 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(dto.EquipmentId);
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentId);
                 if (equipment == null)
                     return NotFound("设备不存在");
 
@@ -594,9 +557,11 @@ namespace oracle_backend.Controllers
                 var STAFF_ID = await GetRepairStaff();
                 if (STAFF_ID == 0)
                     return BadRequest("暂无维修人员，无法维修");
+
                 var repairStart = DateTime.Now;
                 repairStart = new DateTime(repairStart.Year, repairStart.Month, repairStart.Day,
                      repairStart.Hour, repairStart.Minute, repairStart.Second);
+
                 var newOrder = new RepairOrder
                 {
                     EQUIPMENT_ID = dto.EquipmentId,
@@ -606,8 +571,10 @@ namespace oracle_backend.Controllers
                     REPAIR_COST = 0
                 };
 
-                _context.RepairOrders.Add(newOrder);
-                await _context.SaveChangesAsync();
+                await _equipRepo.AddRepairOrderAsync(newOrder);
+                _equipRepo.Update(equipment); // 记得更新设备状态
+                await _equipRepo.SaveChangesAsync(); // 统一保存
+
                 _logger.LogInformation("设备账号 {EquipmentId}, 因 {FaultDescription} 处于维修中", dto.EquipmentId, dto.FaultDescription);
                 return Ok(new
                 {
@@ -633,7 +600,7 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在更新工单");
             try
             {
-                var order = await _context.RepairOrders.FindAsync(
+                var order = await _equipRepo.GetRepairOrderAsync(
                     dto.EquipmentId, dto.StaffId, dto.RepairStart);
 
                 if (order == null)
@@ -645,8 +612,9 @@ namespace oracle_backend.Controllers
                     return BadRequest("维修费用不可为负数");
 
                 order.REPAIR_END = DateTime.Now;
-                order.REPAIR_COST = dto.Success ? Math.Abs(dto.Cost) : -Math.Abs(dto.Cost);//根据正负判断维修成功或失败
-                await _context.SaveChangesAsync();
+                order.REPAIR_COST = dto.Success ? Math.Abs(dto.Cost) : -Math.Abs(dto.Cost);
+
+                await _equipRepo.SaveChangesAsync();
                 return Ok(dto.Success ? "维修成功结果已提交" : "维修失败结果已提交");
             }
             catch (Exception ex)
@@ -661,24 +629,21 @@ namespace oracle_backend.Controllers
         {
             try
             {
-                //检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(dto.OperatorID, 2);
+                // 1. 权限校验逻辑 (保留重复代码) - 注意这里是 AUTHORITY 2
+                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 2);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足，无权操作设备");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(dto.OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 2)
                 {
-                    //获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(dto.OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -687,34 +652,36 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var order = await _context.RepairOrders.FindAsync(
+                // 2. 业务逻辑
+                var order = await _equipRepo.GetRepairOrderAsync(
                     dto.EquipmentId, dto.StaffId, dto.RepairStart);
 
                 if (order == null)
                     return NotFound("工单不存在");
                 if (order.REPAIR_END == default)
                     return BadRequest("工单尚未完成，无法确认");
-                var equipment = await _context.Equipments.FindAsync(dto.EquipmentId);
+
+                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentId);
                 if (equipment == null)
                     return NotFound("设备不存在");
 
                 if (equipment.EQUIPMENT_STATUS != EquipmentStatus.UnderMaintenance)
                     return BadRequest("工单已确认，无需再次操作");
 
-                //正常维修花销大于0,
                 if (order.REPAIR_COST > 0)
                 {
                     equipment.EQUIPMENT_STATUS = EquipmentStatus.Running;
-                    await _context.SaveChangesAsync();
+                    _equipRepo.Update(equipment);
+                    await _equipRepo.SaveChangesAsync();
                     return Ok("设备状态已更新为正常运行");
                 }
                 else
                 {
                     equipment.EQUIPMENT_STATUS = EquipmentStatus.Faulted;
-                    await _context.SaveChangesAsync();
+                    _equipRepo.Update(equipment);
+                    await _equipRepo.SaveChangesAsync();
                     return Ok("维修失败，等待再次分配工单");
                 }
-                //同步现金流？
             }
             catch (Exception ex)
             {
@@ -727,22 +694,18 @@ namespace oracle_backend.Controllers
         {
             try
             {
-                //获取维修部在职员工ID列表
-                var repairStaffIds = await _context.Staffs
-                    .Where(s => s.STAFF_APARTMENT == "维修部")
-                    .Select(s => s.STAFF_ID)
-                    .ToListAsync();
+                // 获取维修部员工列表 (通过 Repository)
+                var repairStaffList = await _equipRepo.GetRepairDepartmentStaffAsync();
 
-                if (repairStaffIds.Count == 0)
+                if (!repairStaffList.Any())
                 {
                     _logger.LogWarning("无可用维修人员");
                     throw new Exception("无可用维修人员");
                 }
 
-                //随机选择一名员工
                 var random = new Random();
-                int index = random.Next(repairStaffIds.Count);
-                return repairStaffIds[index];
+                int index = random.Next(repairStaffList.Count);
+                return repairStaffList[index].STAFF_ID;
             }
             catch (Exception ex)
             {
@@ -750,7 +713,8 @@ namespace oracle_backend.Controllers
                 throw;
             }
         }
-        //新增添加、删除设备功能
+
+        // 新增添加、删除设备功能
 
         [HttpPost("AddEquipment")]
         public async Task<ActionResult<Equipment>> AddEquipment([FromBody] Equipment newEquipment, string OperatorID)
@@ -758,24 +722,21 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在添加设备");
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -785,11 +746,14 @@ namespace oracle_backend.Controllers
                 }
 
                 Console.WriteLine(">>> 权限检查结束，未触发拒绝");
-                var equipment = await _context.Equipments.FindAsync(newEquipment.EQUIPMENT_ID);
+
+                var equipment = await _equipRepo.GetByIdAsync(newEquipment.EQUIPMENT_ID);
                 if (equipment != null)
                     return BadRequest("该设备ID已存在，无法新增设备");
-                await _context.Equipments.AddAsync(newEquipment);
-                await _context.SaveChangesAsync();
+
+                await _equipRepo.AddAsync(newEquipment);
+                await _equipRepo.SaveChangesAsync();
+
                 _logger.LogInformation($"设备添加成功，ID: {newEquipment.EQUIPMENT_ID}");
                 return CreatedAtAction(
                     nameof(GetEquipmentDetail),
@@ -806,30 +770,28 @@ namespace oracle_backend.Controllers
                 return StatusCode(500, "服务器内部错误");
             }
         }
+
         [HttpPost("AddEquipmentLocation")]
         public async Task<ActionResult<EquipmentLocation>> AddEquipmentLocation(int equipmentID, int areaID, string OperatorID)
         {
             _logger.LogInformation("正在添加设备位置信息");
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -838,35 +800,29 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(equipmentID);
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(equipmentID);
                 if (equipment == null)
                     return BadRequest("该设备ID不存在，无法添加设备位置信息");
 
                 if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Discarded)
                     return BadRequest("该设备已被弃用");
 
-                //检查设备位置是否已经存在
-                var locationExists = await _context.EquipmentLocations
-                    .CountAsync(el => el.EQUIPMENT_ID == equipmentID) > 0;
-                if (locationExists)
+                // 检查设备位置是否已经存在
+                if (await _equipRepo.LocationExistsAsync(equipmentID))
                     return BadRequest("该设备已经存在位置信息，无法重复添加");
 
-                var count = await _context.Areas
-                     .Where(a => a.AREA_ID == areaID)
-                     .CountAsync();
-                if (count <= 0)
+                if (!await _equipRepo.AreaExistsAsync(areaID))
                     return BadRequest($"区域ID {areaID} 不存在，无法添加设备位置信息");
 
-
-                //添加设备位置
                 var newLocation = new EquipmentLocation
                 {
                     EQUIPMENT_ID = equipmentID,
                     AREA_ID = areaID
                 };
 
-                await _context.EquipmentLocations.AddAsync(newLocation);
-                await _context.SaveChangesAsync();
+                await _equipRepo.AddLocationAsync(newLocation);
+                await _equipRepo.SaveChangesAsync();
 
                 _logger.LogInformation($"设备位置添加成功，设备ID: {equipmentID}, 区域ID: {areaID}");
                 return Created("GetEquipmentLocation", new
@@ -883,31 +839,27 @@ namespace oracle_backend.Controllers
             }
         }
 
-
         [HttpDelete("DeleteEquipment")]
         public async Task<IActionResult> DeleteEquipment(int equipmentID, string OperatorID)
         {
             _logger.LogInformation($"正在尝试删除设备ID={equipmentID}");
             try
             {
-                //检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -916,20 +868,21 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                var equipment = await _context.Equipments.FindAsync(equipmentID);
+                // 2. 业务逻辑
+                var equipment = await _equipRepo.GetByIdAsync(equipmentID);
                 if (equipment == null)
                     return NotFound("设备不存在");
 
-                var location = await _context.EquipmentLocations
-                    .FirstOrDefaultAsync(el => el.EQUIPMENT_ID == equipmentID);
+                var location = await _equipRepo.GetLocationByEquipmentIdAsync(equipmentID);
                 if (location != null)
                 {
-                    _context.EquipmentLocations.Remove(location);
+                    _equipRepo.RemoveLocation(location);
                     _logger.LogInformation($"删除关联设备位置，设备ID: {equipmentID}");
                 }
 
                 equipment.EQUIPMENT_STATUS = EquipmentStatus.Discarded;
-                await _context.SaveChangesAsync();
+                _equipRepo.Update(equipment); // 更新状态
+                await _equipRepo.SaveChangesAsync();
 
                 _logger.LogInformation($"设备删除成功，ID: {equipmentID}");
                 return Ok(new { message = $"设备删除成功，ID: {equipmentID}" });
@@ -947,24 +900,21 @@ namespace oracle_backend.Controllers
             _logger.LogInformation($"正在尝试解绑设备位置，设备ID={equipmentID}");
             try
             {
-                // 检查操作员权限
-                var isAuthority = await _accountContext.CheckAuthority(OperatorID, 3);
+                // 1. 权限校验逻辑 (保留重复代码)
+                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
                     return BadRequest("操作者权限不足");
                 }
 
-                // 获取操作员账号
-                var operatorAccount = await _accountContext.FindAccount(OperatorID);
+                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
                 if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
                 {
-                    // 获取对应员工
-                    var staffAccount = await _accountContext.CheckStaff(OperatorID);
+                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    var staff = await _context.Staffs
-                        .FirstOrDefaultAsync(s => s.STAFF_ID == staffAccount.STAFF_ID);
+                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
                         return BadRequest("不存在该员工");
@@ -972,11 +922,15 @@ namespace oracle_backend.Controllers
                     if (staff.STAFF_APARTMENT != "维修部")
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
-                var location = await _context.EquipmentLocations.FirstOrDefaultAsync(el => el.EQUIPMENT_ID == equipmentID);
+
+                // 2. 业务逻辑
+                var location = await _equipRepo.GetLocationByEquipmentIdAsync(equipmentID);
                 if (location == null)
                     return NotFound("设备位置不存在");
-                _context.EquipmentLocations.Remove(location);
-                await _context.SaveChangesAsync();
+
+                _equipRepo.RemoveLocation(location);
+                await _equipRepo.SaveChangesAsync();
+
                 _logger.LogInformation($"设备位置解绑成功，设备ID: {equipmentID}");
                 return Ok(new { message = $"设备位置解绑成功，设备ID: {equipmentID}" });
             }

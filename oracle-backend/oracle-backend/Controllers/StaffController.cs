@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
+using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Services;
 using System.ComponentModel.DataAnnotations;
 using System.Numerics;
@@ -22,18 +23,22 @@ namespace oracle_backend.Controllers
         private readonly ILogger<AccountController> _accountLogger;
         private readonly SaleEventService _saleEventService;
 
+        // 注入 IAccountRepository
+        private readonly IAccountRepository _accountRepo;
         public StaffController(
             CollaborationDbContext collabContext,
             ComplexDbContext eventContext,
             AccountDbContext accountContext,
             ILogger<StaffController> logger,
-            ILogger<AccountController> accountLogger)
+            ILogger<AccountController> accountLogger,
+            IAccountRepository accountRepo)
         {
             _collabContext = collabContext;
             _eventContext = eventContext;
             _accountContext = accountContext;
             _logger = logger;
             _accountLogger = accountLogger;
+            _accountRepo = accountRepo;
         }
 
         // =========================================================================
@@ -235,7 +240,7 @@ namespace oracle_backend.Controllers
                     PASSWORD = "DefaultPassword",
                     IDENTITY = "员工"
                 };
-                var accountController = new AccountController(_accountContext, _accountLogger);
+                var accountController = new AccountController(_accountRepo, _accountLogger);
                 var registerResult = await accountController.Register(accountDto) as ObjectResult;
                 _logger.LogInformation("账号注册完成");
                 if (registerResult == null || registerResult.StatusCode != 200)
