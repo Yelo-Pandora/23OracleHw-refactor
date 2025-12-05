@@ -1,7 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
+using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
 
 namespace oracle_backend.Controllers
@@ -10,73 +9,58 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class VenueEventController : ControllerBase
     {
-        private readonly ComplexDbContext _context;
+        private readonly IVenueEventRepository _venueRepo;
         private readonly ILogger<VenueEventController> _logger;
 
-        public VenueEventController(ComplexDbContext context, ILogger<VenueEventController> logger)
+        // 构造函数注入 Repository
+        public VenueEventController(IVenueEventRepository venueRepo, ILogger<VenueEventController> logger)
         {
-            _context = context;
+            _venueRepo = venueRepo;
             _logger = logger;
         }
 
-        // DTO for venue event reservation
+        // DTOs (保持不变)
         public class VenueEventReservationDto
         {
-            [Required]
-            public int CollaborationId { get; set; }
-            [Required]
-            public int AreaId { get; set; }
-            [Required]
-            public DateTime RentStartTime { get; set; }
-            [Required]
-            public DateTime RentEndTime { get; set; }
+            [Required] public int CollaborationId { get; set; }
+            [Required] public int AreaId { get; set; }
+            [Required] public DateTime RentStartTime { get; set; }
+            [Required] public DateTime RentEndTime { get; set; }
             public string? RentPurpose { get; set; }
-            [Required]
-            public string CollaborationName { get; set; }
-            [Required]
-            public string StaffPosition { get; set; }
-            [Required]
-            public string EventName { get; set; }
+            [Required] public string CollaborationName { get; set; }
+            [Required] public string StaffPosition { get; set; }
+            [Required] public string EventName { get; set; }
             public int? ExpectedHeadcount { get; set; }
             public double? ExpectedFee { get; set; }
             public int? Capacity { get; set; }
             public int? Expense { get; set; }
         }
 
-        // DTO for venue event management
         public class VenueEventUpdateDto
         {
             public string? EventName { get; set; }
             public int? Headcount { get; set; }
             public string? Description { get; set; }
-            public string? Status { get; set; } // 筹备中/进行中/已结束/已取消
+            public string? Status { get; set; }
             public List<string>? ParticipantAccounts { get; set; }
         }
 
-        // DTO for venue event settlement
         public class VenueEventSettlementDto
         {
-            [Required]
-            public int EventId { get; set; }
-            [Required]
-            public double VenueFee { get; set; }
+            [Required] public int EventId { get; set; }
+            [Required] public double VenueFee { get; set; }
             public double? AdditionalServiceFee { get; set; }
-            [Required]
-            public string PaymentMethod { get; set; }
+            [Required] public string PaymentMethod { get; set; }
             public string? InvoiceInfo { get; set; }
         }
 
-        // DTO for venue event report
         public class VenueEventReportRequestDto
         {
-            [Required]
-            public DateTime StartDate { get; set; }
-            [Required]
-            public DateTime EndDate { get; set; }
-            public string? ReportType { get; set; } // "daily", "weekly", "monthly"
+            [Required] public DateTime StartDate { get; set; }
+            [Required] public DateTime EndDate { get; set; }
+            public string? ReportType { get; set; }
         }
 
-        // DTO for venue event report response
         public class VenueEventReportDto
         {
             public int TotalEvents { get; set; }
@@ -107,7 +91,7 @@ namespace oracle_backend.Controllers
             public string Status { get; set; }
         }
 
-        // 1. 场地预约功能 (对应需求 1.1.8)
+        // 1. 场地预约功能
         [HttpPost("reservations")]
         public async Task<IActionResult> CreateReservation([FromBody] VenueEventReservationDto dto)
         {
@@ -117,35 +101,30 @@ namespace oracle_backend.Controllers
                 return BadRequest(new { message = "结束时间需晚于起始时间" });
             }
 
-            // 验证活动区域ID是否有效且未被占用
-            var eventArea = await _context.EventAreas.FindAsync(dto.AreaId);
+            // 验证活动区域ID是否有效 (使用 Repository 辅助检查)
+            var eventArea = await _venueRepo.GetEventAreaByIdAsync(dto.AreaId);
             if (eventArea == null)
             {
                 return BadRequest(new { message = "活动区域ID无效" });
             }
 
-            // 检查时间段内是否已被占用
-            var conflictingReservation = await _context.VenueEventDetails
-                .Where(ved => ved.AREA_ID == dto.AreaId &&
-                             ved.STATUS != "已取消" &&
-                             ((ved.RENT_START <= dto.RentStartTime && ved.RENT_END > dto.RentStartTime) ||
-                              (ved.RENT_START < dto.RentEndTime && ved.RENT_END >= dto.RentEndTime) ||
-                              (ved.RENT_START >= dto.RentStartTime && ved.RENT_END <= dto.RentEndTime)))
-                .FirstOrDefaultAsync();
+            // 检查时间段内是否已被占用 (使用 Repository 封装的逻辑)
+            var conflictingReservation = await _venueRepo.GetConflictingReservationAsync(
+                dto.AreaId, dto.RentStartTime, dto.RentEndTime);
 
             if (conflictingReservation != null)
             {
                 return BadRequest(new { message = "该区域在指定时间内已被占用" });
             }
 
-            // 验证合作方是否存在
-            var collaboration = await _context.Collaborations.FindAsync(dto.CollaborationId);
-            if (collaboration == null)
+            // 验证合作方是否存在 (使用 Repository 辅助检查)
+            if (!await _venueRepo.CollaborationExistsAsync(dto.CollaborationId))
             {
                 return BadRequest(new { message = "合作方信息不存在" });
             }
 
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            // 这里涉及两个表的插入，BaseRepository 通常共享同一个 Context 实例，
+            // 只要是在同一个 Scope 内，多次 SaveChangesAsync 是安全的。
             try
             {
                 // 创建场地活动记录
@@ -160,8 +139,8 @@ namespace oracle_backend.Controllers
                     EXPENSE = dto.Expense ?? 0
                 };
 
-                _context.VenueEvents.Add(venueEvent);
-                await _context.SaveChangesAsync();
+                await _venueRepo.AddAsync(venueEvent);
+                await _venueRepo.SaveChangesAsync(); // 获取 ID
 
                 // 创建场地活动详情记录
                 var venueEventDetail = new VenueEventDetail
@@ -172,23 +151,20 @@ namespace oracle_backend.Controllers
                     RENT_START = dto.RentStartTime,
                     RENT_END = dto.RentEndTime,
                     STATUS = "待审批",
-                    FUNDING = 0 // 初始资金为0，后续可以更新
+                    FUNDING = 0
                 };
 
-                _context.VenueEventDetails.Add(venueEventDetail);
-                await _context.SaveChangesAsync();
+                await _venueRepo.AddVenueEventDetailAsync(venueEventDetail);
+                await _venueRepo.SaveChangesAsync();
 
-                await transaction.CommitAsync();
-
-                return Ok(new 
-                { 
+                return Ok(new
+                {
                     message = "场地预约申请提交成功，等待审批",
                     eventId = venueEvent.EVENT_ID
                 });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
                 _logger.LogError(ex, "创建场地预约失败");
                 return StatusCode(500, new { message = "创建场地预约失败" });
             }
@@ -198,8 +174,8 @@ namespace oracle_backend.Controllers
         [HttpPut("reservations/{eventId}/approve")]
         public async Task<IActionResult> ApproveReservation(int eventId, [FromBody] string? approvalNote)
         {
-            var venueEventDetail = await _context.VenueEventDetails
-                .FirstOrDefaultAsync(ved => ved.EVENT_ID == eventId);
+            // 获取详情 (包含状态信息)
+            var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
             if (venueEventDetail == null)
             {
@@ -214,7 +190,12 @@ namespace oracle_backend.Controllers
             try
             {
                 venueEventDetail.STATUS = "已通过";
-                await _context.SaveChangesAsync();
+                // Update 操作在 EF Core 中如果是被追踪实体，直接 SaveChanges 即可，
+                // 或者调用 Update 方法显式标记
+                // BaseRepository.Update(venueEventDetail) 需要泛型匹配，这里是 Detail 对象，
+                // 所以我们依赖 SaveChangesAsync 的 ChangeTracker，或者在 Repo 中加 UpdateDetail 方法。
+                // 鉴于 AddVenueEventDetailAsync 存在，EF Context 会追踪它。
+                await _venueRepo.SaveChangesAsync();
 
                 return Ok(new { message = "预约审批通过" });
             }
@@ -229,24 +210,15 @@ namespace oracle_backend.Controllers
         [HttpPut("reservations/{eventId}/reject")]
         public async Task<IActionResult> RejectReservation(int eventId, [FromBody] string? rejectionReason)
         {
-            var venueEventDetail = await _context.VenueEventDetails
-                .FirstOrDefaultAsync(ved => ved.EVENT_ID == eventId);
+            var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
-            if (venueEventDetail == null)
-            {
-                return NotFound(new { message = "找不到对应的预约记录" });
-            }
-
-            if (venueEventDetail.STATUS != "待审批")
-            {
-                return BadRequest(new { message = "该预约已处理，无法重复审批" });
-            }
+            if (venueEventDetail == null) return NotFound(new { message = "找不到对应的预约记录" });
+            if (venueEventDetail.STATUS != "待审批") return BadRequest(new { message = "该预约已处理，无法重复审批" });
 
             try
             {
                 venueEventDetail.STATUS = "已驳回";
-                await _context.SaveChangesAsync();
-
+                await _venueRepo.SaveChangesAsync();
                 return Ok(new { message = "预约已驳回" });
             }
             catch (Exception ex)
@@ -256,25 +228,18 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 4. 场地活动管理功能 (对应需求 1.1.9)
+        // 4. 场地活动管理功能
         [HttpPut("events/{eventId}")]
         public async Task<IActionResult> UpdateVenueEvent(int eventId, [FromBody] VenueEventUpdateDto dto)
         {
-            var venueEvent = await _context.VenueEvents.FindAsync(eventId);
-            if (venueEvent == null)
-            {
-                return NotFound(new { message = "找不到对应的活动记录" });
-            }
+            // 获取主活动实体 (BaseRepository 方法)
+            var venueEvent = await _venueRepo.GetByIdAsync(eventId);
+            if (venueEvent == null) return NotFound(new { message = "找不到对应的活动记录" });
 
-            var venueEventDetail = await _context.VenueEventDetails
-                .FirstOrDefaultAsync(ved => ved.EVENT_ID == eventId);
+            // 获取活动详情实体 (VenueEventRepository 扩展方法)
+            var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
+            if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动详情记录" });
 
-            if (venueEventDetail == null)
-            {
-                return NotFound(new { message = "找不到对应的活动详情记录" });
-            }
-
-            // 检查活动是否已结束
             if (venueEventDetail.STATUS == "已结束")
             {
                 return BadRequest(new { message = "活动已结束，不可修改或取消" });
@@ -282,39 +247,33 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 更新活动信息
-                if (!string.IsNullOrEmpty(dto.EventName))
-                    venueEvent.EVENT_NAME = dto.EventName;
+                // 更新字段
+                if (!string.IsNullOrEmpty(dto.EventName)) venueEvent.EVENT_NAME = dto.EventName;
+                if (dto.Headcount.HasValue) venueEvent.HEADCOUNT = dto.Headcount.Value;
+                if (!string.IsNullOrEmpty(dto.Status)) venueEventDetail.STATUS = dto.Status;
 
-                if (dto.Headcount.HasValue)
-                    venueEvent.HEADCOUNT = dto.Headcount.Value;
-
-                if (!string.IsNullOrEmpty(dto.Status))
-                    venueEventDetail.STATUS = dto.Status;
-
-                // 处理批量导入参与人员
+                // 处理参与人员 (批量导入)
                 if (dto.ParticipantAccounts != null && dto.ParticipantAccounts.Any())
                 {
-                    // 删除现有临时权限
-                    var existingTempAuthorities = await _context.TempAuthorities
-                        .Where(ta => ta.EVENT_ID == eventId)
-                        .ToListAsync();
-                    _context.TempAuthorities.RemoveRange(existingTempAuthorities);
+                    // 先清空现有 (使用 Repo 方法)
+                    await _venueRepo.RemoveTempAuthoritiesByEventIdAsync(eventId);
 
-                    // 添加新的临时权限
+                    // 添加新的
                     foreach (var account in dto.ParticipantAccounts)
                     {
                         var tempAuthority = new TempAuthority
                         {
                             ACCOUNT = account,
                             EVENT_ID = eventId,
-                            TEMP_AUTHORITY = 3 // 普通员工权限
+                            TEMP_AUTHORITY = 3
                         };
-                        _context.TempAuthorities.Add(tempAuthority);
+                        await _venueRepo.AddTempAuthorityAsync(tempAuthority);
                     }
                 }
 
-                await _context.SaveChangesAsync();
+                // 显式调用 Update (对于 BaseRepo 管理的主实体)
+                _venueRepo.Update(venueEvent);
+                await _venueRepo.SaveChangesAsync();
 
                 return Ok(new { message = "活动信息更新成功" });
             }
@@ -329,24 +288,15 @@ namespace oracle_backend.Controllers
         [HttpPut("events/{eventId}/cancel")]
         public async Task<IActionResult> CancelVenueEvent(int eventId)
         {
-            var venueEventDetail = await _context.VenueEventDetails
-                .FirstOrDefaultAsync(ved => ved.EVENT_ID == eventId);
+            var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
-            if (venueEventDetail == null)
-            {
-                return NotFound(new { message = "找不到对应的活动记录" });
-            }
-
-            if (venueEventDetail.STATUS == "已结束")
-            {
-                return BadRequest(new { message = "活动已结束，不可修改或取消" });
-            }
+            if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动记录" });
+            if (venueEventDetail.STATUS == "已结束") return BadRequest(new { message = "活动已结束，不可修改或取消" });
 
             try
             {
                 venueEventDetail.STATUS = "已取消";
-                await _context.SaveChangesAsync();
-
+                await _venueRepo.SaveChangesAsync();
                 return Ok(new { message = "活动已取消，场地资源已释放" });
             }
             catch (Exception ex)
@@ -360,23 +310,11 @@ namespace oracle_backend.Controllers
         [HttpGet("events")]
         public async Task<IActionResult> GetVenueEvents([FromQuery] string? status, [FromQuery] int? areaId)
         {
-            var query = _context.VenueEventDetails
-                .Include(ved => ved.venueEventNavigation)
-                .Include(ved => ved.eventAreaNavigation)
-                .Include(ved => ved.collaborationNavigation)
-                .AsQueryable();
+            // 使用 Repo 获取带导航属性的数据
+            var events = await _venueRepo.GetVenueEventsWithDetailsAsync(status, areaId);
 
-            if (!string.IsNullOrEmpty(status))
-            {
-                query = query.Where(ved => ved.STATUS == status);
-            }
-
-            if (areaId.HasValue)
-            {
-                query = query.Where(ved => ved.AREA_ID == areaId.Value);
-            }
-
-            var events = await query.Select(ved => new
+            // DTO 转换
+            var result = events.Select(ved => new
             {
                 ved.EVENT_ID,
                 EventName = ved.venueEventNavigation.EVENT_NAME,
@@ -390,39 +328,25 @@ namespace oracle_backend.Controllers
                 Fee = ved.venueEventNavigation.FEE,
                 Capacity = ved.venueEventNavigation.CAPACITY,
                 AreaFee = ved.eventAreaNavigation.AREA_FEE
-            }).ToListAsync();
+            }).ToList();
 
-            return Ok(events);
+            return Ok(result);
         }
 
-        // 7. 场地活动结算收费功能 (对应需求 1.1.10)
+        // 7. 场地活动结算收费功能
         [HttpPost("events/{eventId}/settlement")]
         public async Task<IActionResult> CreateSettlement(int eventId, [FromBody] VenueEventSettlementDto dto)
         {
-            var venueEventDetail = await _context.VenueEventDetails
-                .Include(ved => ved.venueEventNavigation)
-                .Include(ved => ved.eventAreaNavigation)
-                .FirstOrDefaultAsync(ved => ved.EVENT_ID == eventId);
+            var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
-            if (venueEventDetail == null)
-            {
-                return NotFound(new { message = "找不到对应的活动记录" });
-            }
-
-            if (venueEventDetail.STATUS != "已结束")
-            {
-                return BadRequest(new { message = "只有已结束的活动才能进行结算" });
-            }
+            if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动记录" });
+            if (venueEventDetail.STATUS != "已结束") return BadRequest(new { message = "只有已结束的活动才能进行结算" });
 
             try
             {
-                // 计算租用时长（小时）
                 var rentHours = (venueEventDetail.RENT_END - venueEventDetail.RENT_START).TotalHours;
-                
-                // 计算总费用
                 var totalFee = dto.VenueFee + (dto.AdditionalServiceFee ?? 0);
 
-                // 创建结算信息用于返回
                 var settlementInfo = new
                 {
                     EventId = eventId,
@@ -439,13 +363,12 @@ namespace oracle_backend.Controllers
                     SettlementTime = DateTime.Now
                 };
 
-                // 更新活动状态为已结算，并将总费用存储到FUNDING字段
                 venueEventDetail.STATUS = "已结算";
-                venueEventDetail.FUNDING = totalFee;  // 新增：将总费用存储到FUNDING字段
-                await _context.SaveChangesAsync();
+                venueEventDetail.FUNDING = totalFee;
+                await _venueRepo.SaveChangesAsync();
 
-                return Ok(new 
-                { 
+                return Ok(new
+                {
                     message = "结算单生成成功",
                     settlement = settlementInfo
                 });
@@ -457,55 +380,45 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 8. 场地活动统计报表功能 (对应需求 1.1.11)
+        // 8. 场地活动统计报表功能
         [HttpGet("reports")]
         public async Task<IActionResult> GenerateReport([FromQuery] VenueEventReportRequestDto dto)
         {
-            if (dto.EndDate <= dto.StartDate)
-            {
-                return BadRequest(new { message = "结束时间需晚于起始时间" });
-            }
+            if (dto.EndDate <= dto.StartDate) return BadRequest(new { message = "结束时间需晚于起始时间" });
 
             try
             {
-                var events = await _context.VenueEventDetails
-                    .Include(ved => ved.venueEventNavigation)
-                    .Include(ved => ved.eventAreaNavigation)
-                    .Where(ved => ved.RENT_START >= dto.StartDate && ved.RENT_END <= dto.EndDate)
-                    .ToListAsync();
+                // 使用 Repo 获取范围内数据 (已 Include 导航属性)
+                var events = await _venueRepo.GetVenueEventsInRangeAsync(dto.StartDate, dto.EndDate);
+                // 转换为 List 以便进行后续的内存计算
+                var eventsList = events.ToList();
 
-                if (!events.Any())
-                {
-                    return Ok(new { message = "该时间段内无场地活动记录" });
-                }
+                if (!eventsList.Any()) return Ok(new { message = "该时间段内无场地活动记录" });
 
-                // 计算统计数据
-                var totalEvents = events.Count;
-                var totalRentHours = events.Sum(e => (e.RENT_END - e.RENT_START).TotalHours);
-                var totalRevenue = events.Sum(e => (e.eventAreaNavigation?.AREA_FEE ?? 0) * 
+                // 业务计算 (保持在 Controller)
+                var totalEvents = eventsList.Count;
+                var totalRentHours = eventsList.Sum(e => (e.RENT_END - e.RENT_START).TotalHours);
+                var totalRevenue = eventsList.Sum(e => (e.eventAreaNavigation?.AREA_FEE ?? 0) *
                                                    (e.RENT_END - e.RENT_START).TotalHours);
 
-                // 计算平均上座率
-                var eventsWithCapacity = events.Where(e => e.venueEventNavigation.CAPACITY > 0).ToList();
-                var averageOccupancy = eventsWithCapacity.Any() ? 
+                var eventsWithCapacity = eventsList.Where(e => e.venueEventNavigation.CAPACITY > 0).ToList();
+                var averageOccupancy = eventsWithCapacity.Any() ?
                     eventsWithCapacity.Average(e => (double)(e.venueEventNavigation.HEADCOUNT ?? 0) / e.venueEventNavigation.CAPACITY * 100) : 0;
 
-                // 热门场地排行
-                var popularVenues = events
+                var popularVenues = eventsList
                     .GroupBy(e => e.AREA_ID)
                     .Select(g => new PopularVenueDto
                     {
                         AreaId = g.Key,
                         EventCount = g.Count(),
-                        TotalRevenue = g.Sum(e => (e.eventAreaNavigation?.AREA_FEE ?? 0) * 
+                        TotalRevenue = g.Sum(e => (e.eventAreaNavigation?.AREA_FEE ?? 0) *
                                                   (e.RENT_END - e.RENT_START).TotalHours)
                     })
                     .OrderByDescending(p => p.EventCount)
                     .Take(10)
                     .ToList();
 
-                // 活动详情
-                var eventDetails = events.Select(e => new VenueEventSummaryDto
+                var eventDetails = eventsList.Select(e => new VenueEventSummaryDto
                 {
                     EventId = e.EVENT_ID,
                     EventName = e.venueEventNavigation.EVENT_NAME,
@@ -541,22 +454,15 @@ namespace oracle_backend.Controllers
         [HttpGet("events/{eventId}")]
         public async Task<IActionResult> GetVenueEventDetail(int eventId)
         {
-            var venueEventDetail = await _context.VenueEventDetails
-                .Include(ved => ved.venueEventNavigation)
-                .Include(ved => ved.eventAreaNavigation)
-                .Include(ved => ved.collaborationNavigation)
-                .FirstOrDefaultAsync(ved => ved.EVENT_ID == eventId);
+            var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
             if (venueEventDetail == null)
             {
                 return NotFound(new { message = "找不到对应的活动记录" });
             }
 
-            // 获取参与人员列表
-            var participants = await _context.TempAuthorities
-                .Where(ta => ta.EVENT_ID == eventId)
-                .Select(ta => ta.ACCOUNT)
-                .ToListAsync();
+            // 使用 Repo 获取参与人账号列表
+            var participants = await _venueRepo.GetParticipantAccountsAsync(eventId);
 
             var result = new
             {

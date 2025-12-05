@@ -16,6 +16,10 @@ using Microsoft.Extensions.Logging;
 using static oracle_backend.Models.CashFlowDto;
 using System.ComponentModel;
 using Oracle.ManagedDataAccess.Client;
+using oracle_backend.patterns.Composite_Pattern.Component;
+using oracle_backend.patterns.Composite_Pattern.Container;
+using oracle_backend.patterns.Composite_Pattern.Leaf;
+using oracle_backend.Patterns.Repository.Interfaces;
 
 namespace oracle_backend.Controllers
 {
@@ -30,13 +34,29 @@ namespace oracle_backend.Controllers
         private readonly AccountDbContext _accountContext;
         private readonly CollaborationDbContext _collabContext;
 
+        // [新增] Leaf 节点需要的上下文
+        private readonly ParkingContext _parkingContext;
+        private readonly ComplexDbContext _complexContext;
+
+        // [新增] Repository 引用，用于构建 Composite 树
+        private readonly IAreaRepository _areaRepository;
+        private readonly IStoreRepository _storeRepository;
+        private readonly IParkingRepository _parkingRepository;
+        private readonly IVenueEventRepository _venueEventRepository;
         public CashFlowController(
             CashFlowDbContext context,
             ILogger<CashFlowController> logger,
             StoreDbContext storeContext,
             SaleEventService saleEventService,
             AccountDbContext accountContext,
-            CollaborationDbContext collabContext)
+            CollaborationDbContext collabContext,
+            // [新增] 注入参数
+            ParkingContext parkingContext,
+            ComplexDbContext complexContext,
+            IAreaRepository areaRepository,
+            IStoreRepository storeRepository,
+            IParkingRepository parkingRepository,
+            IVenueEventRepository venueEventRepository)
         {
             _context = context;
             _logger = logger;
@@ -44,6 +64,54 @@ namespace oracle_backend.Controllers
             _saleEventService = saleEventService;
             _accountContext = accountContext;
             _collabContext = collabContext;
+            // [新增] 赋值
+            _parkingContext = parkingContext;
+            _complexContext = complexContext;
+            _areaRepository = areaRepository;
+            _storeRepository = storeRepository;
+            _parkingRepository = parkingRepository;
+            _venueEventRepository = venueEventRepository;
+        }
+
+        // [新增] 构建整个商场组合树
+        private async Task<IAreaComponent> BuildWholeMallCompositeAsync()
+        {
+            var mallRoot = new AreaContainer("整个商场组合树的根节点");
+
+            // 1. 添加商铺节点 (Retail Leafs)
+            // 使用 AreaRepository 获取对应类型的区域列表
+            var retailAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("RETAIL", null);
+            foreach (var area in retailAreas)
+            {
+                // [修复] 传入 AreaRepo + StoreRepo
+                mallRoot.Add(new RetailLeaf(_areaRepository, _storeRepository, area.AREA_ID));
+            }
+
+            // 2. 添加停车场节点 (Parking Leafs)
+            var parkingAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("PARKING", null);
+            foreach (var area in parkingAreas)
+            {
+                // [修复] 传入 AreaRepo + ParkingRepo
+                mallRoot.Add(new ParkingLeaf(_areaRepository, _parkingRepository, area.AREA_ID));
+            }
+
+            // 3. 添加活动场地节点 (Event Leafs)
+            var eventAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("EVENT", null);
+            foreach (var area in eventAreas)
+            {
+                // [修复] 传入 AreaRepo
+                mallRoot.Add(new EventLeaf(_areaRepository, _venueEventRepository, area.AREA_ID));
+            }
+
+            // 4. 添加其他区域 (Other Leafs)
+            var otherAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("OTHER", null);
+            foreach (var area in otherAreas)
+            {
+                // [修复] 传入 AreaRepo
+                mallRoot.Add(new OtherLeaf(_areaRepository, area.AREA_ID));
+            }
+
+            return mallRoot;
         }
 
         #region 首页接口 - 获取六个模块的汇总数据
@@ -96,25 +164,94 @@ namespace oracle_backend.Controllers
             }
         }
 
+        //private async Task<CashFlowOverviewResponseDto> GenerateOverviewDataAsync(CashFlowOverviewRequestDto request)
+        //{
+        //    var modules = new[] { "商户租金", "活动结算", "停车场收费", "设备维修", "促销活动", "员工工资" };
+        //    var moduleDataList = new List<CashFlowOverviewModuleDto>();
+
+        //    double totalIncome = 0;
+        //    double totalExpense = 0;
+        //    int totalRecordCount = 0;
+
+        //    //获取所有模块的数据
+        //    foreach (var module in modules)
+        //    {
+        //        var records = await GetRecordsByModuleAsync(module, request.StartDate, request.EndDate);
+
+        //        if (records.Any())
+        //        {
+        //            var timeSeriesData = AggregateByTimeGranularity(records, request.TimeGranularity);
+        //            var moduleIncome = records.Where(r => r.Type == "收入").Sum(r => r.Amount);
+        //            var moduleExpense = records.Where(r => r.Type == "支出").Sum(r => r.Amount);
+
+        //            moduleDataList.Add(new CashFlowOverviewModuleDto
+        //            {
+        //                ModuleType = module,
+        //                TimeSeriesDatas = timeSeriesData,
+        //                TotalIncome = moduleIncome,
+        //                TotalExpense = moduleExpense,
+        //                NetFlow = moduleIncome - moduleExpense
+        //            });
+
+        //            totalIncome += moduleIncome;
+        //            totalExpense += moduleExpense;
+        //            totalRecordCount += records.Count;
+        //        }
+        //    }
+
+        //    return new CashFlowOverviewResponseDto
+        //    {
+        //        ReportTitle = $"现金流总览 - {request.StartDate:yyyy-MM-dd} 至 {request.EndDate:yyyy-MM-dd}",
+        //        GenerateTime = DateTime.Now,
+        //        Criteria = request,
+        //        Modules = moduleDataList,
+        //        Summary = new SummaryInfo
+        //        {
+        //            TotalIncome = totalIncome,
+        //            TotalExpense = totalExpense,
+        //            NetFlow = totalIncome - totalExpense,
+        //            RecordCount = totalRecordCount
+        //        }
+        //    };
+        //}
         private async Task<CashFlowOverviewResponseDto> GenerateOverviewDataAsync(CashFlowOverviewRequestDto request)
         {
-            var modules = new[] { "商户租金", "活动结算", "停车场收费", "设备维修", "促销活动", "员工工资" };
             var moduleDataList = new List<CashFlowOverviewModuleDto>();
+
+            // 1. [Composite] 通过组合模式获取所有区域相关的收入记录 (商户租金、停车场、活动结算)
+            var mallComposite = await BuildWholeMallCompositeAsync();
+            var incomeRecords = await mallComposite.GetCashFlowRecordsAsync(request.StartDate, request.EndDate);
+
+            // 2. [Legacy] 获取支出类记录 (设备、促销、工资) - 这些不属于 AreaComponent 管辖
+            var maintenanceRecords = await GetMaintenanceExpensesAsync(request.StartDate, request.EndDate);
+            var promotionRecords = await GetPromotionExpensesAsync(request.StartDate, request.EndDate);
+            var salaryRecords = await GetSalaryExpensesAsync(request.StartDate, request.EndDate);
+
+            // 3. 合并所有记录
+            var allRecords = new List<CashFlowRecord>();
+            allRecords.AddRange(incomeRecords);
+            allRecords.AddRange(maintenanceRecords);
+            allRecords.AddRange(promotionRecords);
+            allRecords.AddRange(salaryRecords);
+
+            // 4. 定义需要展示的模块列表
+            var modules = new[] { "商户租金", "活动结算", "停车场收费", "设备维修", "促销活动", "员工工资" };
 
             double totalIncome = 0;
             double totalExpense = 0;
             int totalRecordCount = 0;
 
-            //获取所有模块的数据
+            // 5. 按模块分组统计 (逻辑与原函数保持一致，但数据源已变)
             foreach (var module in modules)
             {
-                var records = await GetRecordsByModuleAsync(module, request.StartDate, request.EndDate);
+                // 在内存中筛选对应模块的记录
+                var moduleRecords = allRecords.Where(r => r.Category == module).ToList();
 
-                if (records.Any())
+                if (moduleRecords.Any())
                 {
-                    var timeSeriesData = AggregateByTimeGranularity(records, request.TimeGranularity);
-                    var moduleIncome = records.Where(r => r.Type == "收入").Sum(r => r.Amount);
-                    var moduleExpense = records.Where(r => r.Type == "支出").Sum(r => r.Amount);
+                    var timeSeriesData = AggregateByTimeGranularity(moduleRecords, request.TimeGranularity);
+                    var moduleIncome = moduleRecords.Where(r => r.Type == "收入").Sum(r => r.Amount);
+                    var moduleExpense = moduleRecords.Where(r => r.Type == "支出").Sum(r => r.Amount);
 
                     moduleDataList.Add(new CashFlowOverviewModuleDto
                     {
@@ -127,7 +264,7 @@ namespace oracle_backend.Controllers
 
                     totalIncome += moduleIncome;
                     totalExpense += moduleExpense;
-                    totalRecordCount += records.Count;
+                    totalRecordCount += moduleRecords.Count;
                 }
             }
 
@@ -220,18 +357,75 @@ namespace oracle_backend.Controllers
             }
         }
 
+        //private async Task<CashFlowDetailResponseDto> GenerateDetailDataAsync(CashFlowDetailRequestDto request)
+        //{
+        //    // 获取指定模块的记录
+        //    var records = await GetRecordsByModuleAsync(request.ModuleType, request.StartDate, request.EndDate);
+
+        //    // 应用筛选条件
+        //    var filteredRecords = ApplyFilters(records, request.ModuleType, request.RelatedPartyType, request.RelatedPartyId);
+
+        //    // 生成时间序列数据
+        //    var timeSeriesData = AggregateByTimeGranularity(filteredRecords, request.TimeGranularity);
+
+        //    // 生成关联方汇总数据
+        //    var relatedPartySummaries = new List<RelatedPartySummary>();
+        //    if (!string.IsNullOrEmpty(request.RelatedPartyType))
+        //    {
+        //        relatedPartySummaries = await GetRelatedPartySummariesAsync(
+        //            filteredRecords, request.RelatedPartyType, request.RelatedPartyId);
+        //    }
+
+        //    return new CashFlowDetailResponseDto
+        //    {
+        //        ReportTitle = $"{request.ModuleType}现金流详情 - {request.StartDate:yyyy-MM-dd} 至 {request.EndDate:yyyy-MM-dd}",
+        //        GenerateTime = DateTime.Now,
+        //        Criteria = request,
+        //        TimeSeriesDatas = timeSeriesData,
+        //        Details = request.IncludeDetails ? filteredRecords : new List<CashFlowRecord>(),
+        //        Summary = new SummaryInfo
+        //        {
+        //            TotalIncome = filteredRecords.Where(r => r.Type == "收入").Sum(r => r.Amount),
+        //            TotalExpense = filteredRecords.Where(r => r.Type == "支出").Sum(r => r.Amount),
+        //            NetFlow = filteredRecords.Sum(r => r.Type == "收入" ? r.Amount : -r.Amount),
+        //            RecordCount = filteredRecords.Count
+        //        },
+        //        RelatedPartySummaries = relatedPartySummaries
+        //    };
+        //}
         private async Task<CashFlowDetailResponseDto> GenerateDetailDataAsync(CashFlowDetailRequestDto request)
         {
-            // 获取指定模块的记录
-            var records = await GetRecordsByModuleAsync(request.ModuleType, request.StartDate, request.EndDate);
+            List<CashFlowRecord> records = new List<CashFlowRecord>();
 
-            // 应用筛选条件
+            // 1. 判断请求的模块类型，决定使用 Composite 还是 Legacy 方法
+            if (request.ModuleType == "商户租金" ||
+                request.ModuleType == "停车场收费" ||
+                request.ModuleType == "活动结算") // "场地活动" 在 CashFlowRecord Category 中通常叫 "场地活动" 或 "活动结算"，需保持一致
+            {
+                // [Composite] 收入类模块：构建树并查询
+                var mallComposite = await BuildWholeMallCompositeAsync();
+                var allIncomes = await mallComposite.GetCashFlowRecordsAsync(request.StartDate, request.EndDate);
+
+                // 过滤出特定模块
+                // 注意：Leaf 返回的 Record.Category 必须与 request.ModuleType 匹配
+                // EventLeaf 返回的是 "场地活动"，ParkingLeaf 是 "停车场收费"，RetailLeaf 是 "商户租金"
+                // 这里的 request.ModuleType 需要处理一下别名，或者确保 Leaf 写的 Category 字符串与前端传的一致
+                records = allIncomes.Where(r => r.Category == request.ModuleType ||
+                                              (request.ModuleType == "活动结算" && r.Category == "场地活动")).ToList();
+            }
+            else
+            {
+                // [Legacy] 支出类模块：调用原有私有方法
+                records = await GetRecordsByModuleAsync(request.ModuleType, request.StartDate, request.EndDate);
+            }
+
+            // 2. 应用筛选条件 (关联方筛选等 - 逻辑不变)
             var filteredRecords = ApplyFilters(records, request.ModuleType, request.RelatedPartyType, request.RelatedPartyId);
 
-            // 生成时间序列数据
+            // 3. 生成时间序列数据 (逻辑不变)
             var timeSeriesData = AggregateByTimeGranularity(filteredRecords, request.TimeGranularity);
 
-            // 生成关联方汇总数据
+            // 4. 生成关联方汇总数据 (逻辑不变)
             var relatedPartySummaries = new List<RelatedPartySummary>();
             if (!string.IsNullOrEmpty(request.RelatedPartyType))
             {

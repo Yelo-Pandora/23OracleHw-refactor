@@ -1,28 +1,37 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
-using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
 using Microsoft.Extensions.Logging;
+using oracle_backend.Patterns.Repository.Interfaces; // 引入 Repository 接口
 
 namespace oracle_backend.Services
 {
     public interface ISaleEventService
     {
+        Task<List<SaleEvent>> GetAllSaleEventsAsync();
+        Task<SaleEvent> GetSaleEventAsync(int id);
+        Task<SaleEvent> CreateSaleEventAsync(SaleEventDto dto);
+        Task<SaleEvent> UpdateSaleEventAsync(int id, SaleEventDto dto);
+        Task<bool> DeleteSaleEventAsync(int id);
+        Task<SaleEventReport> GenerateSaleEventReportAsync(int eventId);
+
         Task AddStoreToEventAsync(int eventId, int storeId);
         Task RemoveStoreFromEventAsync(int eventId, int storeId);
         Task<List<Store>> GetStoresByEventAsync(int eventId);
         Task<List<SaleEvent>> GetEventsByStoreAsync(int storeId);
     }
+
     public class SaleEventService : ISaleEventService
     {
-        private readonly SaleEventDbContext _context;
+        // 依赖注入 Repository 而不是 DbContext
+        private readonly ISaleEventRepository _repo;
         private readonly ILogger<SaleEventService> _logger;
-        public SaleEventService(SaleEventDbContext context)
+
+        public SaleEventService(ISaleEventRepository repo, ILogger<SaleEventService> logger)
         {
-            _context = context;
+            _repo = repo;
+            _logger = logger;
         }
 
         public async Task<List<SaleEvent>> GetAllSaleEventsAsync()
@@ -30,12 +39,14 @@ namespace oracle_backend.Services
             try
             {
                 _logger.LogInformation("开始获取所有促销活动");
+                // 调用 BaseRepository 的 GetAllAsync
+                var result = await _repo.GetAllAsync();
 
-                // 直接使用 Set<SaleEvent>()，不需要 Include
-                var result = await _context.Set<SaleEvent>().ToListAsync();
+                // 注意：BaseRepository 返回的是 IEnumerable，这里转为 List 以匹配接口
+                var list = result.ToList();
 
-                _logger.LogInformation($"成功获取 {result.Count} 条促销活动记录");
-                return result;
+                _logger.LogInformation($"成功获取 {list.Count} 条促销活动记录");
+                return list;
             }
             catch (Exception ex)
             {
@@ -44,26 +55,18 @@ namespace oracle_backend.Services
             }
         }
 
-        public SaleEventService(SaleEventDbContext context, ILogger<SaleEventService> logger)
-        {
-            _context = context;
-            _logger = logger;
-        }
-
         public async Task<SaleEvent> CreateSaleEventAsync(SaleEventDto dto)
         {
             if (dto.EventStart > dto.EventEnd)
                 throw new ArgumentException("结束时间必须晚于开始时间");
 
-            // 获取当前最大ID
-            int? maxId = await _context.SaleEvents
-                .MaxAsync(e => (int?)e.EVENT_ID);
-
-            int newId = (maxId ?? 0) + 1;
+            // 业务逻辑：手动生成 ID
+            int maxId = await _repo.GetMaxEventIdAsync();
+            int newId = maxId + 1;
 
             var saleEvent = new SaleEvent
             {
-                EVENT_ID = newId, // 手动设置ID
+                EVENT_ID = newId,
                 EVENT_NAME = dto.EventName,
                 Cost = dto.Cost,
                 EVENT_START = dto.EventStart,
@@ -71,19 +74,19 @@ namespace oracle_backend.Services
                 Description = dto.Description,
             };
 
-            _context.SaleEvents.Add(saleEvent);
-            await _context.SaveChangesAsync();
+            await _repo.AddAsync(saleEvent);
+            await _repo.SaveChangesAsync();
 
             return saleEvent;
         }
 
         public async Task<SaleEvent> UpdateSaleEventAsync(int id, SaleEventDto dto)
         {
-            var saleEvent = await _context.SaleEvents.FindAsync(id);
+            var saleEvent = await _repo.GetByIdAsync(id);
             if (saleEvent == null)
                 throw new KeyNotFoundException("促销活动不存在");
 
-            // 更新字段
+            // 更新字段业务逻辑
             if (!string.IsNullOrEmpty(dto.EventName))
                 saleEvent.EVENT_NAME = dto.EventName;
 
@@ -99,32 +102,33 @@ namespace oracle_backend.Services
             if (dto.EventEnd != default)
                 saleEvent.EVENT_END = dto.EventEnd;
 
-            await _context.SaveChangesAsync();
+            _repo.Update(saleEvent);
+            await _repo.SaveChangesAsync();
             return saleEvent;
         }
 
         public async Task<bool> DeleteSaleEventAsync(int id)
         {
-            var saleEvent = await _context.SaleEvents.FindAsync(id);
+            var saleEvent = await _repo.GetByIdAsync(id);
             if (saleEvent == null) return false;
 
-            _context.SaleEvents.Remove(saleEvent);
-            await _context.SaveChangesAsync();
+            _repo.Remove(saleEvent);
+            await _repo.SaveChangesAsync();
             return true;
         }
 
         public async Task<SaleEvent> GetSaleEventAsync(int id)
         {
-            return await _context.SaleEvents.FindAsync(id);
+            return await _repo.GetByIdAsync(id);
         }
 
         public async Task<SaleEventReport> GenerateSaleEventReportAsync(int eventId)
         {
-            var saleEvent = await _context.SaleEvents.FindAsync(eventId);
+            var saleEvent = await _repo.GetByIdAsync(eventId);
             if (saleEvent == null)
                 throw new KeyNotFoundException("促销活动不存在");
 
-            // 销售
+            // 模拟调用外部系统获取数据
             var reportData = await FetchSalesDataFromExternalSystem(saleEvent);
 
             return new SaleEventReport
@@ -138,29 +142,10 @@ namespace oracle_backend.Services
             };
         }
 
-        private double CalculateROI(double salesIncrement, double cost)
-        {
-            return cost == 0 ? 0 : (salesIncrement - cost) / cost;
-        }
-
-        private async Task<(double SalesIncrement, double CouponRedemptionRate)>
-            FetchSalesDataFromExternalSystem(SaleEvent saleEvent)
-        {
-            // 模拟调用
-            await Task.Delay(100);
-
-            // 销售
-            return (
-                SalesIncrement: new Random().Next(1000, 10000),
-                CouponRedemptionRate: new Random().Next(50, 95) / 100.0
-            );
-        }
-
         public async Task AddStoreToEventAsync(int eventId, int storeId)
         {
-            // 检查是否已存在关联
-            var existing = await _context.PartStores
-                .FirstOrDefaultAsync(ps => ps.EVENT_ID == eventId && ps.STORE_ID == storeId);
+            // 检查关联是否存在
+            var existing = await _repo.GetPartStoreAsync(eventId, storeId);
 
             if (existing != null)
                 throw new Exception("商铺已参与该活动");
@@ -171,42 +156,48 @@ namespace oracle_backend.Services
                 STORE_ID = storeId
             };
 
-            _context.PartStores.Add(partStore);
-            await _context.SaveChangesAsync();
+            await _repo.AddPartStoreAsync(partStore);
+            await _repo.SaveChangesAsync();
         }
 
         public async Task RemoveStoreFromEventAsync(int eventId, int storeId)
         {
-            var partStore = await _context.PartStores
-                .FirstOrDefaultAsync(ps => ps.EVENT_ID == eventId && ps.STORE_ID == storeId);
+            var partStore = await _repo.GetPartStoreAsync(eventId, storeId);
 
             if (partStore == null)
                 throw new Exception("未找到关联记录");
 
-            _context.PartStores.Remove(partStore);
-            await _context.SaveChangesAsync();
+            _repo.RemovePartStore(partStore);
+            await _repo.SaveChangesAsync();
         }
 
         public async Task<List<Store>> GetStoresByEventAsync(int eventId)
         {
-            return await _context.PartStores
-                .Where(ps => ps.EVENT_ID == eventId)
-                .Join(_context.Stores,
-                    ps => ps.STORE_ID,
-                    s => s.STORE_ID,
-                    (ps, s) => s)
-                .ToListAsync();
+            // Join 逻辑已封装在 Repository 中
+            return await _repo.GetStoresByEventIdAsync(eventId);
         }
 
         public async Task<List<SaleEvent>> GetEventsByStoreAsync(int storeId)
         {
-            return await _context.PartStores
-                .Where(ps => ps.STORE_ID == storeId)
-                .Join(_context.SaleEvents,
-                    ps => ps.EVENT_ID,
-                    se => se.EVENT_ID,
-                    (ps, se) => se)
-                .ToListAsync();
+            // Join 逻辑已封装在 Repository 中
+            return await _repo.GetEventsByStoreIdAsync(storeId);
+        }
+
+        // --- 私有辅助方法保持不变 ---
+
+        private double CalculateROI(double salesIncrement, double cost)
+        {
+            return cost == 0 ? 0 : (salesIncrement - cost) / cost;
+        }
+
+        private async Task<(double SalesIncrement, double CouponRedemptionRate)>
+            FetchSalesDataFromExternalSystem(SaleEvent saleEvent)
+        {
+            await Task.Delay(100);
+            return (
+                SalesIncrement: new Random().Next(1000, 10000),
+                CouponRedemptionRate: new Random().Next(50, 95) / 100.0
+            );
         }
     }
 }

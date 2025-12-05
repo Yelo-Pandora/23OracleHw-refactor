@@ -2,6 +2,11 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
+using oracle_backend.patterns.Composite_Pattern.Component;
+using oracle_backend.patterns.Composite_Pattern.Container;
+using oracle_backend.patterns.Composite_Pattern.Leaf;
+using oracle_backend.Patterns.Repository.Implementations;
+using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
 
 namespace oracle_backend.Controllers
@@ -45,13 +50,25 @@ namespace oracle_backend.Controllers
          *    - GET /api/Parking/DiagnoseParkingData - 数据诊断
          */
         private readonly ParkingContext _parkingContext;
-        private readonly AccountDbContext _accountContext;
+        //private readonly AccountDbContext _accountContext;
+        private readonly IParkingRepository _parkingRepo;
+        private readonly IAccountRepository _accountRepo;
+        private readonly IAreaRepository _areaRepo;
         private readonly ILogger<ParkingController> _logger;
 
-        public ParkingController(ParkingContext parkingContext, AccountDbContext accountContext, ILogger<ParkingController> logger)
+        public ParkingController(
+            ParkingContext parkingContext,
+            //AccountDbContext accountContext, 
+            IParkingRepository parkingRepo,
+            IAccountRepository accountRepo,
+            IAreaRepository areaRepo,
+            ILogger<ParkingController> logger)
         {
             _parkingContext = parkingContext;
-            _accountContext = accountContext;
+            //_accountContext = accountContext;
+            _parkingRepo = parkingRepo;
+            _accountRepo = accountRepo;
+            _areaRepo = areaRepo;
             _logger = logger;
         }
 
@@ -64,7 +81,7 @@ namespace oracle_backend.Controllers
             {
                 _logger.LogInformation("开始检查账号权限：{OperatorAccount}", operatorAccount);
                 
-                var account = await _accountContext.FindAccount(operatorAccount);
+                var account = await _accountRepo.FindAccountByUsername(operatorAccount);
                 if (account == null)
                 {
                     _logger.LogWarning("账号 {OperatorAccount} 不存在", operatorAccount);
@@ -313,227 +330,359 @@ namespace oracle_backend.Controllers
         /// <summary>
         /// 停车场信息管理 - 获取停车场信息
         /// </summary>
+        //[HttpGet("GetParkingLotInfo/{areaId}")]
+        //public async Task<IActionResult> GetParkingLotInfo(int areaId, [FromQuery] string? operatorAccount = null)
+        //{
+        //    try
+        //    {
+        //        _logger.LogInformation("获取停车场信息：区域ID {AreaId}, 操作员 {OperatorAccount}", areaId, operatorAccount);
+
+        //        // 验证操作员权限
+        //        if (!string.IsNullOrEmpty(operatorAccount))
+        //        {
+        //            var hasPermission = await _accountContext.CheckAuthority(operatorAccount, 2);
+        //            if (!hasPermission)
+        //            {
+        //                _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
+        //                return BadRequest(new { error = "权限不足，需要管理员或部门经理权限" });
+        //            }
+        //        }
+
+        //        // 检查停车场是否存在
+        //        var parkingLotExists = await _parkingContext.ParkingLotExists(areaId);
+        //        if (!parkingLotExists)
+        //        {
+        //            _logger.LogWarning("停车场区域 {AreaId} 不存在", areaId);
+        //            return NotFound(new { error = "停车场区域不存在" });
+        //        }
+
+        //        // 获取停车场信息
+        //        var parkingLot = await _parkingContext.GetParkingLotById(areaId);
+        //        if (parkingLot == null)
+        //        {
+        //            return NotFound(new { error = "停车场信息不存在" });
+        //        }
+
+        //        // 获取车位信息
+        //        var parkingSpaces = await _parkingContext.GetParkingSpacesByArea(areaId);
+        //        var totalSpaces = await _parkingContext.GetParkingLotSpaceCount(areaId); // 使用新方法获取车位数
+        //        // 使用统计方法获取占用车位数，避免直接布尔比较
+        //        var statistics = await _parkingContext.GetParkingStatusStatistics(areaId);
+        //        var occupiedSpaces = statistics.OccupiedSpaces;
+        //        var availableSpaces = totalSpaces - occupiedSpaces;
+
+        //        // 获取停车场实际状态
+        //        var currentStatus = _parkingContext.GetParkingLotStatus(areaId);
+
+        //        var parkingInfo = new ParkingLotInfoResponseDto
+        //        {
+        //            AreaId = parkingLot.AREA_ID,
+        //            ParkingFee = parkingLot.PARKING_FEE,
+        //            TotalSpaces = totalSpaces,
+        //            OccupiedSpaces = occupiedSpaces,
+        //            AvailableSpaces = availableSpaces,
+        //            OccupancyRate = totalSpaces > 0 ? Math.Round((double)occupiedSpaces / totalSpaces * 100, 2) : 0,
+        //            Status = currentStatus,
+        //            LastUpdateTime = DateTime.Now,
+        //            CanPark = availableSpaces > 0 && currentStatus == "正常运营"
+        //        };
+
+        //        _logger.LogInformation("成功获取停车场信息：区域ID {AreaId}", areaId);
+        //        return Ok(parkingInfo);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _logger.LogError(ex, "获取停车场信息时发生错误：{AreaId}", areaId);
+        //        return StatusCode(500, new { 
+        //            error = "服务器内部错误", 
+        //            details = ex.Message,
+        //            stackTrace = ex.StackTrace 
+        //        });
+        //    }
+        //}
         [HttpGet("GetParkingLotInfo/{areaId}")]
         public async Task<IActionResult> GetParkingLotInfo(int areaId, [FromQuery] string? operatorAccount = null)
         {
             try
             {
-                _logger.LogInformation("获取停车场信息：区域ID {AreaId}, 操作员 {OperatorAccount}", areaId, operatorAccount);
+                _logger.LogInformation("获取停车场信息：区域ID {AreaId}", areaId);
 
-                // 验证操作员权限
+                // 1. 权限验证
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var hasPermission = await _accountContext.CheckAuthority(operatorAccount, 2);
-                    if (!hasPermission)
-                    {
-                        _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
-                        return BadRequest(new { error = "权限不足，需要管理员或部门经理权限" });
-                    }
+                    if (!await _accountRepo.CheckAuthority(operatorAccount, 2))
+                        return BadRequest(new { error = "权限不足" });
                 }
 
-                // 检查停车场是否存在
-                var parkingLotExists = await _parkingContext.ParkingLotExists(areaId);
-                if (!parkingLotExists)
-                {
-                    _logger.LogWarning("停车场区域 {AreaId} 不存在", areaId);
-                    return NotFound(new { error = "停车场区域不存在" });
-                }
+                // 2. [Composite] 构建 Leaf
+                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, areaId);
 
-                // 获取停车场信息
-                var parkingLot = await _parkingContext.GetParkingLotById(areaId);
-                if (parkingLot == null)
-                {
-                    return NotFound(new { error = "停车场信息不存在" });
-                }
+                // 3. [Composite] 调用接口
+                var details = await component.GetDetailsAsync();
 
-                // 获取车位信息
-                var parkingSpaces = await _parkingContext.GetParkingSpacesByArea(areaId);
-                var totalSpaces = await _parkingContext.GetParkingLotSpaceCount(areaId); // 使用新方法获取车位数
-                // 使用统计方法获取占用车位数，避免直接布尔比较
-                var statistics = await _parkingContext.GetParkingStatusStatistics(areaId);
-                var occupiedSpaces = statistics.OccupiedSpaces;
-                var availableSpaces = totalSpaces - occupiedSpaces;
+                if (details == null) return NotFound(new { error = "停车场信息不存在" });
 
-                // 获取停车场实际状态
-                var currentStatus = _parkingContext.GetParkingLotStatus(areaId);
-                
-                var parkingInfo = new ParkingLotInfoResponseDto
+                // 4. 数据转换 (DTO -> Response)
+                // ParkingLeaf 中: CapacityOrSpaces = TotalSpaces, Price = ParkingFee
+                int total = details.CapacityOrSpaces ?? 0;
+                int occupied = (int)Math.Round(total * details.OccupancyRate);
+
+                return Ok(new ParkingLotInfoResponseDto
                 {
-                    AreaId = parkingLot.AREA_ID,
-                    ParkingFee = parkingLot.PARKING_FEE,
-                    TotalSpaces = totalSpaces,
-                    OccupiedSpaces = occupiedSpaces,
-                    AvailableSpaces = availableSpaces,
-                    OccupancyRate = totalSpaces > 0 ? Math.Round((double)occupiedSpaces / totalSpaces * 100, 2) : 0,
-                    Status = currentStatus,
+                    AreaId = details.AreaId,
+                    ParkingFee = (int)(details.Price ?? 0),
+                    TotalSpaces = total,
+                    OccupiedSpaces = occupied,
+                    AvailableSpaces = total - occupied,
+                    OccupancyRate = Math.Round(details.OccupancyRate * 100, 2), // 0.8 -> 80.0
+                    Status = details.BusinessStatus ?? "未知",
                     LastUpdateTime = DateTime.Now,
-                    CanPark = availableSpaces > 0 && currentStatus == "正常运营"
-                };
-
-                _logger.LogInformation("成功获取停车场信息：区域ID {AreaId}", areaId);
-                return Ok(parkingInfo);
+                    CanPark = (total - occupied) > 0 && details.BusinessStatus == "正常运营"
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "获取停车场信息时发生错误：{AreaId}", areaId);
-                return StatusCode(500, new { 
-                    error = "服务器内部错误", 
-                    details = ex.Message,
-                    stackTrace = ex.StackTrace 
-                });
+                _logger.LogError(ex, "获取停车场信息失败");
+                return StatusCode(500, new { error = ex.Message });
             }
         }
 
         /// <summary>
         /// 停车场信息管理 - 更新停车场信息（合并了原来的UpdateParkingLotInfo和UpdateStatus）
         /// </summary>
+        //[HttpPatch("UpdateParkingLotInfo/{areaId}")]
+        //public async Task<IActionResult> UpdateParkingLotInfo(int areaId, [FromBody] ParkingLotInfoDto dto)
+        //{
+        //    _logger.LogInformation("开始更新停车场信息：区域ID {AreaId}", areaId);
+
+        //    // 检查模型验证
+        //    if (!ModelState.IsValid)
+        //    {
+        //        var errors = ModelState.Values
+        //            .SelectMany(v => v.Errors)
+        //            .Select(e => e.ErrorMessage)
+        //            .ToList();
+        //        _logger.LogWarning("更新停车场信息模型验证失败：{Errors}", string.Join(", ", errors));
+        //        return BadRequest(new { error = "输入数据验证失败", details = errors });
+        //    }
+
+        //    try
+        //    {
+        //        // 1. 验证操作员权限（需要最高权限9）
+        //        if (!string.IsNullOrEmpty(dto.OperatorAccount))
+        //        {
+        //            var hasPermission = await CheckHighestAuthority(dto.OperatorAccount);
+        //            if (!hasPermission)
+        //            {
+        //                _logger.LogWarning("操作员 {OperatorAccount} 权限不足，需要最高权限", dto.OperatorAccount);
+        //                return BadRequest(new { error = "操作员权限不足，需要最高权限" });
+        //            }
+        //        }
+
+        //        // 2. 检查停车场是否存在
+        //        var parkingLotExists = await _parkingContext.ParkingLotExists(areaId);
+        //        if (!parkingLotExists)
+        //        {
+        //            _logger.LogWarning("停车场区域 {AreaId} 不存在", areaId);
+        //            return BadRequest(new { error = "停车场区域不存在" });
+        //        }
+
+        //        // 3. 验证状态值
+        //        var validStatuses = new[] { "正常运营", "维护中", "暂停服务" };
+        //        if (!validStatuses.Contains(dto.Status))
+        //        {
+        //            return BadRequest(new { error = $"无效的状态值。有效值为：{string.Join(", ", validStatuses)}" });
+        //        }
+
+        //        // 4. 检查是否有车辆在停车场（如果要设置为维护中）
+        //        if (dto.Status == "维护中")
+        //        {
+        //            // 使用统计方法获取占用车位数，避免直接布尔比较
+        //            var statistics = await _parkingContext.GetParkingStatusStatistics(areaId);
+        //            var occupiedSpaces = statistics.OccupiedSpaces;
+
+        //            if (occupiedSpaces > 0)
+        //            {
+        //                _logger.LogWarning("停车场 {AreaId} 当前有 {OccupiedSpaces} 辆车，无法设置为维护中", areaId, occupiedSpaces);
+        //                return BadRequest(new { 
+        //                    error = "当前有车辆，是否强制设为维护中",
+        //                    occupiedVehicles = occupiedSpaces,
+        //                    canForceMaintenance = true
+        //                });
+        //            }
+        //        }
+
+        //        // 5. 更新停车场信息（不包含车位数修改）
+        //        var updateSuccess = await _parkingContext.UpdateParkingLotInfo(areaId, dto.ParkingFee, dto.Status, null);
+        //        if (!updateSuccess)
+        //        {
+        //            _logger.LogError("更新停车场信息失败：区域ID {AreaId}", areaId);
+        //            return BadRequest(new { error = "更新停车场信息失败" });
+        //        }
+
+        //        _logger.LogInformation("成功更新停车场信息：区域ID {AreaId}, 停车费 {ParkingFee}, 状态 {Status}", 
+        //            areaId, dto.ParkingFee, dto.Status);
+
+        //        // 返回更新后的信息
+        //        return Ok(new
+        //        {
+        //            message = "停车场信息更新成功",
+        //            areaId = areaId,
+        //            parkingFee = dto.ParkingFee,
+        //            status = dto.Status,
+        //            updateTime = DateTime.Now,
+        //            operatorAccount = dto.OperatorAccount
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _logger.LogError(ex, "更新停车场信息时发生错误：{AreaId}", areaId);
+        //        return StatusCode(500, new { 
+        //            error = "服务器内部错误，更新停车场信息失败",
+        //            details = ex.Message
+        //        });
+        //    }
+        //}
         [HttpPatch("UpdateParkingLotInfo/{areaId}")]
         public async Task<IActionResult> UpdateParkingLotInfo(int areaId, [FromBody] ParkingLotInfoDto dto)
         {
-            _logger.LogInformation("开始更新停车场信息：区域ID {AreaId}", areaId);
-
-            // 检查模型验证
-            if (!ModelState.IsValid)
-            {
-                var errors = ModelState.Values
-                    .SelectMany(v => v.Errors)
-                    .Select(e => e.ErrorMessage)
-                    .ToList();
-                _logger.LogWarning("更新停车场信息模型验证失败：{Errors}", string.Join(", ", errors));
-                return BadRequest(new { error = "输入数据验证失败", details = errors });
-            }
+            if (!ModelState.IsValid) return BadRequest(new { error = "输入验证失败" });
 
             try
             {
-                // 1. 验证操作员权限（需要最高权限9）
                 if (!string.IsNullOrEmpty(dto.OperatorAccount))
                 {
-                    var hasPermission = await CheckHighestAuthority(dto.OperatorAccount);
-                    if (!hasPermission)
-                    {
-                        _logger.LogWarning("操作员 {OperatorAccount} 权限不足，需要最高权限", dto.OperatorAccount);
-                        return BadRequest(new { error = "操作员权限不足，需要最高权限" });
-                    }
+                    if (!await CheckHighestAuthority(dto.OperatorAccount))
+                        return BadRequest(new { error = "权限不足" });
                 }
 
-                // 2. 检查停车场是否存在
-                var parkingLotExists = await _parkingContext.ParkingLotExists(areaId);
-                if (!parkingLotExists)
+                // [Composite] 构建 Leaf
+                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, areaId);
+
+                if (!await _parkingRepo.ParkingLotExistsAsync(areaId))
+                    return BadRequest(new { error = "停车场不存在" });
+
+                // [Composite] 构造配置包
+                // ParkingLeaf 会读取 config.Price 更新费用，config.Status 更新状态
+                var config = new AreaConfiguration
                 {
-                    _logger.LogWarning("停车场区域 {AreaId} 不存在", areaId);
-                    return BadRequest(new { error = "停车场区域不存在" });
-                }
+                    Price = dto.ParkingFee,
+                    Status = dto.Status
+                };
 
-                // 3. 验证状态值
-                var validStatuses = new[] { "正常运营", "维护中", "暂停服务" };
-                if (!validStatuses.Contains(dto.Status))
-                {
-                    return BadRequest(new { error = $"无效的状态值。有效值为：{string.Join(", ", validStatuses)}" });
-                }
+                // [Composite] 调用接口
+                await component.UpdateInfoAsync(config);
 
-                // 4. 检查是否有车辆在停车场（如果要设置为维护中）
-                if (dto.Status == "维护中")
-                {
-                    // 使用统计方法获取占用车位数，避免直接布尔比较
-                    var statistics = await _parkingContext.GetParkingStatusStatistics(areaId);
-                    var occupiedSpaces = statistics.OccupiedSpaces;
-                    
-                    if (occupiedSpaces > 0)
-                    {
-                        _logger.LogWarning("停车场 {AreaId} 当前有 {OccupiedSpaces} 辆车，无法设置为维护中", areaId, occupiedSpaces);
-                        return BadRequest(new { 
-                            error = "当前有车辆，是否强制设为维护中",
-                            occupiedVehicles = occupiedSpaces,
-                            canForceMaintenance = true
-                        });
-                    }
-                }
-
-                // 5. 更新停车场信息（不包含车位数修改）
-                var updateSuccess = await _parkingContext.UpdateParkingLotInfo(areaId, dto.ParkingFee, dto.Status, null);
-                if (!updateSuccess)
-                {
-                    _logger.LogError("更新停车场信息失败：区域ID {AreaId}", areaId);
-                    return BadRequest(new { error = "更新停车场信息失败" });
-                }
-
-                _logger.LogInformation("成功更新停车场信息：区域ID {AreaId}, 停车费 {ParkingFee}, 状态 {Status}", 
-                    areaId, dto.ParkingFee, dto.Status);
-
-                // 返回更新后的信息
                 return Ok(new
                 {
                     message = "停车场信息更新成功",
                     areaId = areaId,
                     parkingFee = dto.ParkingFee,
                     status = dto.Status,
-                    updateTime = DateTime.Now,
-                    operatorAccount = dto.OperatorAccount
+                    updateTime = DateTime.Now
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "更新停车场信息时发生错误：{AreaId}", areaId);
-                return StatusCode(500, new { 
-                    error = "服务器内部错误，更新停车场信息失败",
-                    details = ex.Message
-                });
+                return StatusCode(500, new { error = ex.Message });
             }
         }
 
         /// <summary>
         /// 停车场信息管理 - 强制设置维护状态（当有车辆时）
         /// </summary>
+        //[HttpPut("ForceMaintenanceStatus")]
+        //public async Task<IActionResult> ForceMaintenanceStatus([FromBody] ParkingLotInfoDto dto)
+        //{
+        //    _logger.LogInformation("强制设置停车场维护状态：区域ID {AreaId}", dto.AreaId);
+
+        //    try
+        //    {
+        //        // 1. 验证操作员权限（需要管理员权限）
+        //        if (!string.IsNullOrEmpty(dto.OperatorAccount))
+        //        {
+        //            var hasPermission = await _accountContext.CheckAuthority(dto.OperatorAccount, 1);
+        //            if (!hasPermission)
+        //            {
+        //                _logger.LogWarning("操作员 {OperatorAccount} 权限不足", dto.OperatorAccount);
+        //                return BadRequest(new { error = "操作员权限不足，需要管理员权限" });
+        //            }
+        //        }
+
+        //        // 2. 检查停车场是否存在
+        //        var parkingLotExists = await _parkingContext.ParkingLotExists(dto.AreaId);
+        //        if (!parkingLotExists)
+        //        {
+        //            return BadRequest(new { error = "停车场区域不存在" });
+        //        }
+
+        //        // 3. 强制更新为维护状态
+        //        var updateSuccess = await _parkingContext.UpdateParkingLotInfo(dto.AreaId, dto.ParkingFee, "维护中");
+        //        if (!updateSuccess)
+        //        {
+        //            return BadRequest(new { error = "更新停车场信息失败" });
+        //        }
+
+        //        _logger.LogInformation("强制设置停车场维护状态成功：区域ID {AreaId}", dto.AreaId);
+
+        //        return Ok(new
+        //        {
+        //            message = "停车场已强制设置为维护状态",
+        //            areaId = dto.AreaId,
+        //            status = "维护中",
+        //            updateTime = DateTime.Now,
+        //            warning = "当前有车辆在停车场，请确保安全后再进行维护"
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _logger.LogError(ex, "强制设置维护状态时发生错误：{AreaId}", dto.AreaId);
+        //        return StatusCode(500, new { error = "服务器内部错误" });
+        //    }
+        //}
         [HttpPut("ForceMaintenanceStatus")]
         public async Task<IActionResult> ForceMaintenanceStatus([FromBody] ParkingLotInfoDto dto)
         {
-            _logger.LogInformation("强制设置停车场维护状态：区域ID {AreaId}", dto.AreaId);
-
             try
             {
-                // 1. 验证操作员权限（需要管理员权限）
                 if (!string.IsNullOrEmpty(dto.OperatorAccount))
                 {
-                    var hasPermission = await _accountContext.CheckAuthority(dto.OperatorAccount, 1);
-                    if (!hasPermission)
-                    {
-                        _logger.LogWarning("操作员 {OperatorAccount} 权限不足", dto.OperatorAccount);
-                        return BadRequest(new { error = "操作员权限不足，需要管理员权限" });
-                    }
+                    if (!await _accountRepo.CheckAuthority(dto.OperatorAccount, 1))
+                        return BadRequest(new { error = "权限不足" });
                 }
 
-                // 2. 检查停车场是否存在
-                var parkingLotExists = await _parkingContext.ParkingLotExists(dto.AreaId);
-                if (!parkingLotExists)
+                // [Composite] 构建 Leaf
+                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, dto.AreaId);
+
+                if (!await _parkingRepo.ParkingLotExistsAsync(dto.AreaId))
+                    return BadRequest(new { error = "停车场不存在" });
+
+                // [Composite] 构造配置包：强制将 Status 设为 "维护中"
+                // 费用(Price)设为 null，表示不修改费用
+                var config = new AreaConfiguration
                 {
-                    return BadRequest(new { error = "停车场区域不存在" });
-                }
+                    Status = "维护中",
+                    Price = null
+                };
 
-                // 3. 强制更新为维护状态
-                var updateSuccess = await _parkingContext.UpdateParkingLotInfo(dto.AreaId, dto.ParkingFee, "维护中");
-                if (!updateSuccess)
-                {
-                    return BadRequest(new { error = "更新停车场信息失败" });
-                }
+                // [Composite] 调用接口
+                await component.UpdateInfoAsync(config);
 
-                _logger.LogInformation("强制设置停车场维护状态成功：区域ID {AreaId}", dto.AreaId);
+                _logger.LogInformation("强制设置维护状态成功：{AreaId}", dto.AreaId);
 
                 return Ok(new
                 {
                     message = "停车场已强制设置为维护状态",
                     areaId = dto.AreaId,
                     status = "维护中",
-                    updateTime = DateTime.Now,
-                    warning = "当前有车辆在停车场，请确保安全后再进行维护"
+                    updateTime = DateTime.Now
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "强制设置维护状态时发生错误：{AreaId}", dto.AreaId);
-                return StatusCode(500, new { error = "服务器内部错误" });
+                return StatusCode(500, new { error = ex.Message });
             }
         }
-
 
 
         #endregion
@@ -543,113 +692,175 @@ namespace oracle_backend.Controllers
         /// <summary>
         /// 车位状态查询 - 获取停车场概览统计 (RESTful风格)
         /// </summary>
+        //[HttpGet("summary")]
+        //public async Task<IActionResult> GetParkingSummary([FromQuery] string? operatorAccount = null)
+        //{
+        //    try
+        //    {
+        //        _logger.LogInformation("获取所有停车场概览，操作员 {OperatorAccount}", operatorAccount);
+
+        //        // 验证操作员权限（员工/商户/管理员都可以查询）
+        //        if (!string.IsNullOrEmpty(operatorAccount))
+        //        {
+        //            var account = await _accountRepo.FindAccountByUsername(operatorAccount);
+        //            if (account == null || account.AUTHORITY > 5)
+        //            {
+        //                _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
+        //                return BadRequest(new { success = false, error = "权限不足，需要员工及以上权限" });
+        //            }
+        //        }
+
+        //        // 获取所有停车场
+        //        var allParkingLots = await _parkingContext.PARKING_LOT.ToListAsync();
+
+        //        if (!allParkingLots.Any())
+        //        {
+        //            _logger.LogInformation("系统中暂无停车场数据");
+        //            return Ok(new { 
+        //                success = true,
+        //                data = new List<object>(),
+        //                timestamp = DateTime.Now,
+        //                total = 0,
+        //                message = "系统中暂无停车场数据"
+        //            });
+        //        }
+
+        //        var overviewList = new List<ParkingLotOverviewDto>();
+
+        //        foreach (var lot in allParkingLots)
+        //        {
+        //            try
+        //            {
+        //                // 获取停车场基本信息
+        //                var area = await _parkingContext.AREA.FirstOrDefaultAsync(a => a.AREA_ID == lot.AREA_ID);
+
+        //                // 获取车位统计信息
+        //                var statistics = await _parkingContext.GetParkingStatusStatistics(lot.AREA_ID);
+
+        //                // 获取停车场状态
+        //                var status = _parkingContext.GetParkingLotStatus(lot.AREA_ID);
+
+        //                var overview = new ParkingLotOverviewDto
+        //                {
+        //                    AreaId = lot.AREA_ID,
+        //                    ParkingFee = lot.PARKING_FEE,
+        //                    AreaSize = area?.AREA_SIZE ?? 0,
+        //                    Status = status,
+        //                    TotalSpaces = statistics.TotalSpaces,
+        //                    OccupiedSpaces = statistics.OccupiedSpaces,
+        //                    AvailableSpaces = statistics.AvailableSpaces,
+        //                    OccupancyRate = statistics.OccupancyRate,
+        //                    CanPark = statistics.AvailableSpaces > 0 && status == "正常运营",
+        //                    LastUpdateTime = DateTime.Now
+        //                };
+
+        //                overviewList.Add(overview);
+        //            }
+        //            catch (Exception ex)
+        //            {
+        //                _logger.LogWarning(ex, "获取停车场 {AreaId} 概览信息时发生错误", lot.AREA_ID);
+
+        //                // 即使某个停车场出错，也要继续处理其他停车场
+        //                var errorOverview = new ParkingLotOverviewDto
+        //                {
+        //                    AreaId = lot.AREA_ID,
+        //                    ParkingFee = lot.PARKING_FEE,
+        //                    AreaSize = 0,
+        //                    Status = "数据异常",
+        //                    TotalSpaces = 0,
+        //                    OccupiedSpaces = 0,
+        //                    AvailableSpaces = 0,
+        //                    OccupancyRate = 0.0,
+        //                    CanPark = false,
+        //                    LastUpdateTime = DateTime.Now,
+        //                    Error = "数据获取异常"
+        //                };
+
+        //                overviewList.Add(errorOverview);
+        //            }
+        //        }
+
+        //        var response = new ApiResponseDto<List<ParkingLotOverviewDto>>
+        //        {
+        //            Success = true,
+        //            Data = overviewList.OrderBy(lot => lot.AreaId).ToList(),
+        //            Timestamp = DateTime.Now,
+        //            Total = overviewList.Count
+        //        };
+
+        //        _logger.LogInformation("成功获取所有停车场概览，共 {Count} 个停车场", overviewList.Count);
+        //        return Ok(response);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _logger.LogError(ex, "获取停车场概览时发生错误");
+        //        return StatusCode(500, new { 
+        //            success = false,
+        //            error = "服务器内部错误", 
+        //            details = ex.Message 
+        //        });
+        //    }
+        //}
         [HttpGet("summary")]
         public async Task<IActionResult> GetParkingSummary([FromQuery] string? operatorAccount = null)
         {
             try
             {
-                _logger.LogInformation("获取所有停车场概览，操作员 {OperatorAccount}", operatorAccount);
-
-                // 验证操作员权限（员工/商户/管理员都可以查询）
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var account = await _accountContext.FindAccount(operatorAccount);
-                    if (account == null || account.AUTHORITY > 5)
-                    {
-                        _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
-                        return BadRequest(new { success = false, error = "权限不足，需要员工及以上权限" });
-                    }
+                    var acc = await _accountRepo.FindAccountByUsername(operatorAccount);
+                    if (acc == null || acc.AUTHORITY > 5)
+                        return BadRequest(new { success = false, error = "权限不足" });
                 }
 
-                // 获取所有停车场
-                var allParkingLots = await _parkingContext.PARKING_LOT.ToListAsync();
-                
-                if (!allParkingLots.Any())
-                {
-                    _logger.LogInformation("系统中暂无停车场数据");
-                    return Ok(new { 
-                        success = true,
-                        data = new List<object>(),
-                        timestamp = DateTime.Now,
-                        total = 0,
-                        message = "系统中暂无停车场数据"
-                    });
-                }
+                var allLots = await _parkingContext.PARKING_LOT.ToListAsync();
+                var list = new List<ParkingLotOverviewDto>();
 
-                var overviewList = new List<ParkingLotOverviewDto>();
-
-                foreach (var lot in allParkingLots)
+                foreach (var lot in allLots)
                 {
                     try
                     {
-                        // 获取停车场基本信息
-                        var area = await _parkingContext.AREA.FirstOrDefaultAsync(a => a.AREA_ID == lot.AREA_ID);
-                        
-                        // 获取车位统计信息
-                        var statistics = await _parkingContext.GetParkingStatusStatistics(lot.AREA_ID);
-                        
-                        // 获取停车场状态
-                        var status = _parkingContext.GetParkingLotStatus(lot.AREA_ID);
+                        // [Composite] 构建 Leaf
+                        IAreaComponent leaf = new ParkingLeaf(_areaRepo, _parkingRepo, lot.AREA_ID);
 
-                        var overview = new ParkingLotOverviewDto
+                        // [Composite] 获取详情
+                        var info = await leaf.GetDetailsAsync();
+
+                        // 转换逻辑
+                        int total = info.CapacityOrSpaces ?? 0;
+                        int occupied = (int)Math.Round(total * info.OccupancyRate);
+
+                        list.Add(new ParkingLotOverviewDto
                         {
-                            AreaId = lot.AREA_ID,
-                            ParkingFee = lot.PARKING_FEE,
-                            AreaSize = area?.AREA_SIZE ?? 0,
-                            Status = status,
-                            TotalSpaces = statistics.TotalSpaces,
-                            OccupiedSpaces = statistics.OccupiedSpaces,
-                            AvailableSpaces = statistics.AvailableSpaces,
-                            OccupancyRate = statistics.OccupancyRate,
-                            CanPark = statistics.AvailableSpaces > 0 && status == "正常运营",
+                            AreaId = info.AreaId,
+                            ParkingFee = (int)(info.Price ?? 0),
+                            AreaSize = info.AreaSize ?? 0,
+                            Status = info.BusinessStatus ?? "未知",
+                            TotalSpaces = total,
+                            OccupiedSpaces = occupied,
+                            AvailableSpaces = total - occupied,
+                            OccupancyRate = Math.Round(info.OccupancyRate * 100, 2),
+                            CanPark = (total - occupied) > 0 && info.BusinessStatus == "正常运营",
                             LastUpdateTime = DateTime.Now
-                        };
-
-                        overviewList.Add(overview);
+                        });
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        _logger.LogWarning(ex, "获取停车场 {AreaId} 概览信息时发生错误", lot.AREA_ID);
-                        
-                        // 即使某个停车场出错，也要继续处理其他停车场
-                        var errorOverview = new ParkingLotOverviewDto
-                        {
-                            AreaId = lot.AREA_ID,
-                            ParkingFee = lot.PARKING_FEE,
-                            AreaSize = 0,
-                            Status = "数据异常",
-                            TotalSpaces = 0,
-                            OccupiedSpaces = 0,
-                            AvailableSpaces = 0,
-                            OccupancyRate = 0.0,
-                            CanPark = false,
-                            LastUpdateTime = DateTime.Now,
-                            Error = "数据获取异常"
-                        };
-                        
-                        overviewList.Add(errorOverview);
+                        list.Add(new ParkingLotOverviewDto { AreaId = lot.AREA_ID, Status = "异常", Error = "获取失败" });
                     }
                 }
 
-                var response = new ApiResponseDto<List<ParkingLotOverviewDto>>
+                return Ok(new ApiResponseDto<List<ParkingLotOverviewDto>>
                 {
                     Success = true,
-                    Data = overviewList.OrderBy(lot => lot.AreaId).ToList(),
-                    Timestamp = DateTime.Now,
-                    Total = overviewList.Count
-                };
-
-                _logger.LogInformation("成功获取所有停车场概览，共 {Count} 个停车场", overviewList.Count);
-                return Ok(response);
+                    Data = list.OrderBy(x => x.AreaId).ToList(),
+                    Total = list.Count,
+                    Timestamp = DateTime.Now
+                });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "获取停车场概览时发生错误");
-                return StatusCode(500, new { 
-                    success = false,
-                    error = "服务器内部错误", 
-                    details = ex.Message 
-                });
+                return StatusCode(500, new { success = false, error = ex.Message });
             }
         }
 
@@ -666,7 +877,7 @@ namespace oracle_backend.Controllers
                 // 验证操作员权限
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var account = await _accountContext.FindAccount(operatorAccount);
+                    var account = await _accountRepo.FindAccountByUsername(operatorAccount);
                     if (account == null || account.AUTHORITY > 5)
                     {
                         _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
@@ -681,7 +892,7 @@ namespace oracle_backend.Controllers
                     _logger.LogInformation("查询指定停车场 {AreaId} 的车位状态", areaId.Value);
                     
                     // 查询指定停车场
-                    var parkingLotExists = await _parkingContext.ParkingLotExists(areaId.Value);
+                    var parkingLotExists = await _parkingRepo.ParkingLotExistsAsync(areaId.Value);
                     if (!parkingLotExists)
                     {
                         _logger.LogWarning("停车场区域 {AreaId} 不存在", areaId.Value);
@@ -689,7 +900,7 @@ namespace oracle_backend.Controllers
                     }
 
                     _logger.LogInformation("停车场 {AreaId} 存在，开始查询车位状态", areaId.Value);
-                    var spaces = await _parkingContext.GetParkingSpaceStatuses(areaId.Value);
+                    var spaces = await _parkingRepo.GetParkingSpaceStatusesAsync(areaId.Value);
                     _logger.LogInformation("查询到 {Count} 个车位状态", spaces.Count);
                     
                     foreach (var space in spaces)
@@ -712,7 +923,7 @@ namespace oracle_backend.Controllers
                     var allParkingLots = await _parkingContext.PARKING_LOT.ToListAsync();
                     foreach (var lot in allParkingLots)
                     {
-                        var spaces = await _parkingContext.GetParkingSpaceStatuses(lot.AREA_ID);
+                        var spaces = await _parkingRepo.GetParkingSpaceStatusesAsync(lot.AREA_ID);
                         foreach (var space in spaces)
                         {
                             allSpaces.Add(new
@@ -771,7 +982,7 @@ namespace oracle_backend.Controllers
                 // 验证操作员权限
                 if (!string.IsNullOrEmpty(operatorAccount))
                 {
-                    var account = await _accountContext.FindAccount(operatorAccount);
+                    var account = await _accountRepo.FindAccountByUsername(operatorAccount);
                     if (account == null || account.AUTHORITY > 5)
                     {
                         _logger.LogWarning("操作员 {OperatorAccount} 权限不足", operatorAccount);
@@ -805,7 +1016,7 @@ namespace oracle_backend.Controllers
                     .FirstOrDefaultAsync();
 
                 // 安全地获取占用状态，避免直接布尔比较
-                var isOccupied = !await _parkingContext.IsParkingSpaceAvailable(parkingSpaceId);
+                var isOccupied = !await _parkingRepo.IsParkingSpaceAvailableAsync(parkingSpaceId);
                 
                 var response = new
                 {
@@ -859,14 +1070,14 @@ namespace oracle_backend.Controllers
             try
             {
                 // 权限校验：管理员
-                var hasPermission = await _accountContext.CheckAuthority(dto.OperatorAccount, 1);
+                var hasPermission = await _accountRepo.CheckAuthority(dto.OperatorAccount, 1);
                 if (!hasPermission)
                 {
                     return BadRequest(new { error = "权限不足，需要管理员权限" });
                 }
 
                 // 调用重写的VehicleEntry方法
-                var (success, message) = await _parkingContext.VehicleEntry(dto.LicensePlateNumber, dto.ParkingSpaceId);
+                var (success, message) = await _parkingRepo.VehicleEntryAsync(dto.LicensePlateNumber, dto.ParkingSpaceId);
                 if (!success)
                 {
                     return BadRequest(new { error = message });
@@ -915,13 +1126,13 @@ namespace oracle_backend.Controllers
 
             try
             {
-                var hasPermission = await _accountContext.CheckAuthority(dto.OperatorAccount, 1);
+                var hasPermission = await _accountRepo.CheckAuthority(dto.OperatorAccount, 1);
                 if (!hasPermission)
                 {
                     return BadRequest(new { error = "权限不足，需要管理员权限" });
                 }
 
-                var result = await _parkingContext.VehicleExit(dto.LicensePlateNumber);
+                var result = await _parkingRepo.VehicleExitAsync(dto.LicensePlateNumber);
                 if (result == null)
                 {
                     return NotFound(new { error = "未找到车辆当日停车记录" });
@@ -959,13 +1170,13 @@ namespace oracle_backend.Controllers
 
             try
             {
-                var hasPermission = await _accountContext.CheckAuthority(operatorAccount, 1);
+                var hasPermission = await _accountRepo.CheckAuthority(operatorAccount, 1);
                 if (!hasPermission)
                 {
                     return BadRequest(new { error = "权限不足，需要管理员权限" });
                 }
 
-                var ok = await _parkingContext.ProcessParkingPayment(request);
+                var ok = await _parkingRepo.ProcessParkingPaymentAsync(request);
                 if (!ok)
                 {
                     return BadRequest(new { error = "支付处理失败" });
@@ -1014,7 +1225,7 @@ namespace oracle_backend.Controllers
                 foreach (var areaId in parkingLotIds)
                 {
                     // 获取状态
-                    var status = _parkingContext.GetParkingLotStatus(areaId);
+                    var status = _parkingRepo.GetParkingLotStatusAsync(areaId);
                     configs.Add(new
                     {
                         ConfigKey = $"parking_status_{areaId}",
@@ -1024,7 +1235,7 @@ namespace oracle_backend.Controllers
                     });
                     
                     // 获取车位数
-                    var spaceCount = _parkingContext.GetParkingLotSpaceCount(areaId).Result;
+                    var spaceCount = _parkingRepo.GetParkingLotSpaceCountAsync(areaId).Result;
                     configs.Add(new
                     {
                         ConfigKey = $"parking_space_count_{areaId}",
@@ -1066,17 +1277,17 @@ namespace oracle_backend.Controllers
                 switch (status.ToLower())
                 {
                     case "paid":
-                        records = await _parkingContext.GetPaidParkingRecords();
+                        records = await _parkingRepo.GetPaymentRecordsAsync("paid");
                         message = $"获取到{records.Count}条已支付记录";
                         break;
                     case "unpaid":
-                        records = await _parkingContext.GetUnpaidParkingRecords();
+                        records = await  _parkingRepo.GetUnpaidParkingRecordsAsync();
                         message = $"获取到{records.Count}条未支付记录";
                         break;
                     case "all":
                     default:
-                        var paidRecords = await _parkingContext.GetPaidParkingRecords();
-                        var unpaidRecords = await _parkingContext.GetUnpaidParkingRecords();
+                        var paidRecords = await _parkingRepo.GetPaymentRecordsAsync("paid");
+                        var unpaidRecords = await _parkingRepo.GetPaymentRecordsAsync("unpaid");
                         records = paidRecords.Concat(unpaidRecords).ToList();
                         message = $"获取到{paidRecords.Count}条已支付记录，{unpaidRecords.Count}条未支付记录";
                         break;
@@ -1108,7 +1319,7 @@ namespace oracle_backend.Controllers
         {
             try
             {
-                var parkingLots = await _parkingContext.GetParkingLotList();
+                var parkingLots = await _parkingRepo.GetParkingLotListAsync();
                 
                 return Ok(new ApiResponseDto<List<dynamic>>
                 {
@@ -1135,8 +1346,8 @@ namespace oracle_backend.Controllers
                 if (areaId.HasValue)
                 {
                     // 查询指定停车场
-                    var currentVehicles = await _parkingContext.GetCurrentVehiclesByParkingLot(areaId.Value);
-                    
+                    var currentVehicles = await _parkingRepo.GetCurrentVehiclesAsync(areaId);
+
                     if (currentVehicles.Count == 0)
                     {
                         return Ok(new ApiResponseDto<List<Models.VehicleStatusResult>>
@@ -1200,8 +1411,8 @@ namespace oracle_backend.Controllers
                     return BadRequest(new { error = "车牌号不能为空" });
                 }
 
-                var vehicleStatus = await _parkingContext.GetVehicleStatusByLicensePlate(licensePlate.Trim().ToUpper());
-                
+                var vehicleStatus = await _parkingRepo.GetVehicleStatusByLicensePlateAsync(licensePlate.Trim().ToUpper());
+
                 if (vehicleStatus == null)
                 {
                     return Ok(new ApiResponseDto<Models.VehicleStatusResult>
@@ -1251,7 +1462,7 @@ namespace oracle_backend.Controllers
                 var activeCarsInDb = allCarsInDb.Where(c => !c.PARK_END.HasValue).ToList();
 
                 // 2. 查询内存中的支付记录
-                var paymentRecordsInMemory = await _parkingContext.GetPaymentRecordsInTimeRange(start, end);
+                var paymentRecordsInMemory = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(start, end);
 
                 // 3. 查询PARK表记录
                 var parkRecordsInDb = await _parkingContext.PARK
@@ -1659,7 +1870,7 @@ namespace oracle_backend.Controllers
                 var end = endDate ?? DateTime.Today.AddDays(1);
 
                 // 获取内存中的支付记录
-                var paymentRecords = await _parkingContext.GetPaymentRecordsInTimeRange(start, end);
+                var paymentRecords = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(start, end);
 
                 return Ok(new ApiResponseDto<object>
                 {
@@ -1811,68 +2022,207 @@ namespace oracle_backend.Controllers
         /// <summary>
         /// 获取停车场统计报表（原有功能）
         /// </summary>
+        //[HttpPost("StatisticsReport")]
+        //public async Task<IActionResult> GetParkingStatisticsReport([FromBody] ParkingStatisticsReportDto dto)
+        //{
+        //    try
+        //    {
+        //        _logger.LogInformation("生成停车场统计报表：时间范围 {StartDate} - {EndDate}, 区域 {AreaId}, 操作员 {Operator}", 
+        //            dto.StartDate, dto.EndDate, dto.AreaId, dto.OperatorAccount);
+
+        //        // 简单权限验证（不查询数据库）
+        //        if (string.IsNullOrEmpty(dto.OperatorAccount))
+        //        {
+        //            return BadRequest(new { error = "操作员账号不能为空" });
+        //        }
+
+        //        // 简单验证：只允许admin账号
+        //        if (dto.OperatorAccount != "admin")
+        //        {
+        //            return BadRequest(new { 
+        //                error = "权限不足，需要管理员权限",
+        //                debug = new {
+        //                    account = dto.OperatorAccount,
+        //                    message = "只有admin账号可以生成统计报表"
+        //                }
+        //            });
+        //        }
+
+        //        _logger.LogInformation("[DEBUG] 权限验证通过，操作员：{Account}", dto.OperatorAccount);
+
+        //        // 验证时间范围
+        //        if (dto.StartDate >= dto.EndDate)
+        //        {
+        //            return BadRequest(new { 
+        //                error = "开始时间必须早于结束时间",
+        //                debug = new {
+        //                    startDate = dto.StartDate.ToString("yyyy-MM-dd HH:mm:ss"),
+        //                    endDate = dto.EndDate.ToString("yyyy-MM-dd HH:mm:ss"),
+        //                    startDateTicks = dto.StartDate.Ticks,
+        //                    endDateTicks = dto.EndDate.Ticks,
+        //                    timeSpan = dto.EndDate - dto.StartDate,
+        //                    days = (dto.EndDate - dto.StartDate).Days
+        //                }
+        //            });
+        //        }
+
+        //        // 查询真实数据库数据
+        //        var reportData = await GetRealParkingStatistics(dto.StartDate, dto.EndDate, dto.AreaId);
+
+        //        // 检查是否有支付记录
+        //        var hasPaymentRecords = await _parkingContext.GetPaymentRecordsInTimeRange(dto.StartDate, dto.EndDate);
+
+        //        if (reportData.TotalParkingCount == 0)
+        //        {
+        //            return Ok(new ApiResponseDto<ParkingStatisticsReportResponseDto>
+        //            {
+        //                Success = true,
+        //                Data = reportData,
+        //                Message = "该时间段内无停车记录",
+        //                Total = 0
+        //            });
+        //        }
+
+        //        if (!hasPaymentRecords.Any())
+        //        {
+        //            return Ok(new ApiResponseDto<ParkingStatisticsReportResponseDto>
+        //            {
+        //                Success = true,
+        //                Data = new ParkingStatisticsReportResponseDto
+        //                {
+        //                    StartDate = dto.StartDate,
+        //                    EndDate = dto.EndDate,
+        //                    AreaId = dto.AreaId,
+        //                    AreaName = dto.AreaId.HasValue ? $"停车场{dto.AreaId.Value}" : "所有停车场",
+        //                    TotalParkingCount = reportData.TotalParkingCount,
+        //                    TotalRevenue = 0,
+        //                    AverageParkingHours = 0,
+        //                    HourlyTraffic = new List<HourlyTrafficDto>(),
+        //                    DailyStatistics = new List<DailyStatisticsDto>(),
+        //                    GeneratedAt = DateTime.Now
+        //                },
+        //                Message = $"该时间段内有{reportData.TotalParkingCount}条停车记录，但无支付记录。请先生成支付记录后再生成统计报表。",
+        //                Total = 0
+        //            });
+        //        }
+
+        //        return Ok(new ApiResponseDto<ParkingStatisticsReportResponseDto>
+        //        {
+        //            Success = true,
+        //            Data = reportData,
+        //            Message = $"成功生成统计报表，共{reportData.TotalParkingCount}条停车记录",
+        //            Total = 1
+        //        });
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        _logger.LogError(ex, "生成停车场统计报表时发生错误");
+        //        return StatusCode(500, new { error = "服务器内部错误", details = ex.Message });
+        //    }
+        //}
         [HttpPost("StatisticsReport")]
         public async Task<IActionResult> GetParkingStatisticsReport([FromBody] ParkingStatisticsReportDto dto)
         {
             try
             {
-                _logger.LogInformation("生成停车场统计报表：时间范围 {StartDate} - {EndDate}, 区域 {AreaId}, 操作员 {Operator}", 
-                    dto.StartDate, dto.EndDate, dto.AreaId, dto.OperatorAccount);
-
-                // 简单权限验证（不查询数据库）
+                // 1. 基础验证
                 if (string.IsNullOrEmpty(dto.OperatorAccount))
-                {
                     return BadRequest(new { error = "操作员账号不能为空" });
-                }
-                
-                // 简单验证：只允许admin账号
-                if (dto.OperatorAccount != "admin")
-                {
-                    return BadRequest(new { 
-                        error = "权限不足，需要管理员权限",
-                        debug = new {
-                            account = dto.OperatorAccount,
-                            message = "只有admin账号可以生成统计报表"
-                        }
-                    });
-                }
-                
-                _logger.LogInformation("[DEBUG] 权限验证通过，操作员：{Account}", dto.OperatorAccount);
-
-                // 验证时间范围
+                if (dto.OperatorAccount != "admin") // 原逻辑的硬编码验证
+                    return BadRequest(new { error = "权限不足，需要管理员权限" });
                 if (dto.StartDate >= dto.EndDate)
+                    return BadRequest(new { error = "时间范围无效" });
+
+                // =================================================================
+                // 2. [Composite 模式] 构建组件树 (构建 Leaf 或 Container)
+                // =================================================================
+                IAreaComponent component;
+                string areaName = "所有停车场";
+
+                if (dto.AreaId.HasValue)
                 {
-                    return BadRequest(new { 
-                        error = "开始时间必须早于结束时间",
-                        debug = new {
-                            startDate = dto.StartDate.ToString("yyyy-MM-dd HH:mm:ss"),
-                            endDate = dto.EndDate.ToString("yyyy-MM-dd HH:mm:ss"),
-                            startDateTicks = dto.StartDate.Ticks,
-                            endDateTicks = dto.EndDate.Ticks,
-                            timeSpan = dto.EndDate - dto.StartDate,
-                            days = (dto.EndDate - dto.StartDate).Days
-                        }
-                    });
+                    // Case A: 单个停车场 -> 这是一个 Leaf
+                    // 验证是否存在
+                    if (!await _parkingContext.ParkingLotExists(dto.AreaId.Value))
+                        return BadRequest(new { error = "停车场不存在" });
+
+                    component = new ParkingLeaf(_areaRepo, _parkingRepo, dto.AreaId.Value);
+                    areaName = $"停车场{dto.AreaId.Value}";
                 }
-
-                // 查询真实数据库数据
-                var reportData = await GetRealParkingStatistics(dto.StartDate, dto.EndDate, dto.AreaId);
-
-                // 检查是否有支付记录
-                var hasPaymentRecords = await _parkingContext.GetPaymentRecordsInTimeRange(dto.StartDate, dto.EndDate);
-                
-                if (reportData.TotalParkingCount == 0)
+                else
                 {
-                    return Ok(new ApiResponseDto<ParkingStatisticsReportResponseDto>
+                    // Case B: 所有停车场 -> 这是一个 Container
+                    // 先查出所有停车场的 ID
+                    var allAreaIds = await _parkingContext.PARKING_LOT
+                        .Select(pl => pl.AREA_ID)
+                        .ToListAsync();
+
+                    var container = new AreaContainer("所有停车场容器");
+                    foreach (var id in allAreaIds)
                     {
-                        Success = true,
-                        Data = reportData,
-                        Message = "该时间段内无停车记录",
-                        Total = 0
-                    });
+                        container.Add(new ParkingLeaf(_areaRepo, _parkingRepo, id));
+                    }
+                    component = container;
                 }
-                
-                if (!hasPaymentRecords.Any())
+
+                // =================================================================
+                // 3. [Composite 模式] 统一获取数据
+                // 无论上面是 Leaf 还是 Container，这里只管调用 GetCashFlowRecordsAsync
+                // =================================================================
+
+                // 获取流水记录 (List<CashFlowRecord>)
+                // ParkingLeaf 内部已经筛选了 DateRange 和 AreaId
+                var records = await component.GetCashFlowRecordsAsync(dto.StartDate, dto.EndDate);
+
+                // =================================================================
+                // 4. [Controller 职责] 数据聚合与报表生成
+                // 原来 GetRealParkingStatistics 中的统计逻辑，现在转移到这里处理
+                // =================================================================
+
+                var recordList = records.ToList(); // 避免多次枚举
+
+                // 4.1 基础统计
+                int totalCount = recordList.Count;
+                decimal totalRevenue = (decimal)recordList.Sum(r => r.Amount);
+
+                // 原逻辑中 CashFlowRecord 没有时长信息
+                double avgHours = 0;
+
+                // 4.2 生成每日统计 (Daily Statistics)
+                var dailyStats = recordList
+                    .GroupBy(r => r.Date.Date)
+                    .Select(g => new DailyStatisticsDto
+                    {
+                        Date = g.Key,
+                        ParkingCount = g.Count(),
+                        Revenue = (decimal)g.Sum(r => r.Amount),
+                        AverageParkingHours = 0 // 同样受限于通用接口数据结构
+                    })
+                    .OrderBy(d => d.Date)
+                    .ToList();
+
+                // 4.3 生成每小时统计 (Hourly Traffic)
+                // 初始化 0-23 小时
+                var hourlyTraffic = Enumerable.Range(0, 24).Select(h => new HourlyTrafficDto
+                {
+                    Hour = h,
+                    Revenue = 0,
+                    ExitCount = 0,
+                    EntryCount = 0
+                }).ToList();
+
+                // 填充数据
+                var groupedHourly = recordList.GroupBy(r => r.Date.Hour);
+                foreach (var g in groupedHourly)
+                {
+                    var dtoItem = hourlyTraffic.First(h => h.Hour == g.Key);
+                    dtoItem.ExitCount = g.Count();
+                    dtoItem.Revenue = (decimal)g.Sum(r => r.Amount);
+                }
+
+                // 5. 构造返回结果
+                // 检查是否有数据 (原逻辑的检查)
+                if (totalCount == 0)
                 {
                     return Ok(new ApiResponseDto<ParkingStatisticsReportResponseDto>
                     {
@@ -1882,15 +2232,14 @@ namespace oracle_backend.Controllers
                             StartDate = dto.StartDate,
                             EndDate = dto.EndDate,
                             AreaId = dto.AreaId,
-                            AreaName = dto.AreaId.HasValue ? $"停车场{dto.AreaId.Value}" : "所有停车场",
-                            TotalParkingCount = reportData.TotalParkingCount,
+                            AreaName = areaName,
+                            TotalParkingCount = 0,
                             TotalRevenue = 0,
-                            AverageParkingHours = 0,
                             HourlyTraffic = new List<HourlyTrafficDto>(),
                             DailyStatistics = new List<DailyStatisticsDto>(),
                             GeneratedAt = DateTime.Now
                         },
-                        Message = $"该时间段内有{reportData.TotalParkingCount}条停车记录，但无支付记录。请先生成支付记录后再生成统计报表。",
+                        Message = "该时间段内无停车记录",
                         Total = 0
                     });
                 }
@@ -1898,8 +2247,20 @@ namespace oracle_backend.Controllers
                 return Ok(new ApiResponseDto<ParkingStatisticsReportResponseDto>
                 {
                     Success = true,
-                    Data = reportData,
-                    Message = $"成功生成统计报表，共{reportData.TotalParkingCount}条停车记录",
+                    Data = new ParkingStatisticsReportResponseDto
+                    {
+                        StartDate = dto.StartDate,
+                        EndDate = dto.EndDate,
+                        AreaId = dto.AreaId,
+                        AreaName = areaName,
+                        TotalParkingCount = totalCount,
+                        TotalRevenue = totalRevenue,
+                        AverageParkingHours = avgHours,
+                        HourlyTraffic = hourlyTraffic,
+                        DailyStatistics = dailyStats,
+                        GeneratedAt = DateTime.Now
+                    },
+                    Message = $"成功生成统计报表，共{totalCount}条停车记录",
                     Total = 1
                 });
             }
@@ -1946,7 +2307,7 @@ namespace oracle_backend.Controllers
                 Console.WriteLine($"[DEBUG] EF Core查询结果: 出场记录数={totalExitCount}");
 
                 // 统计内存中的支付记录
-                var paymentRecordsInTimeRange = await _parkingContext.GetPaymentRecordsInTimeRange(startDate, endDate);
+                var paymentRecordsInTimeRange = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(startDate, endDate);
                 var paymentRecordsCount = paymentRecordsInTimeRange.Count;
 
                 _logger.LogInformation("[DEBUG] 内存中支付记录数：{Count}", paymentRecordsCount);
@@ -2261,8 +2622,9 @@ namespace oracle_backend.Controllers
             try
             {
                 // 获取基础统计数据
-                var baseStats = await GetRealParkingStatistics(startDate, endDate, areaId);
-                
+                //var baseStats = await GetRealParkingStatistics(startDate, endDate, areaId);
+                var baseStats = await _parkingRepo.GetParkingStatisticsReportAsync(startDate, endDate, areaId);
+
                 // 计算高峰时段车位利用率
                 var peakUtilization = await CalculatePeakHourUtilization(startDate, endDate, areaId);
                 
@@ -2409,7 +2771,7 @@ namespace oracle_backend.Controllers
                 Console.WriteLine($"[DEBUG] 查询到 {parkingRecords.Count} 条停车记录");
 
                 // 获取支付记录信息
-                var paymentRecords = await _parkingContext.GetPaymentRecordsInTimeRange(startDate, endDate);
+                var paymentRecords = await _parkingRepo.GetPaymentRecordsInTimeRangeAsync(startDate, endDate);
                 var paymentRecordsDict = paymentRecords.ToDictionary(
                     pr => $"{pr.LicensePlateNumber}_{pr.ParkStart:yyyyMMddHHmmss}",
                     pr => pr

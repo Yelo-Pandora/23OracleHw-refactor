@@ -1,12 +1,10 @@
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
-using System.ComponentModel;
+using oracle_backend.patterns.Composite_Pattern.Component;
+using oracle_backend.patterns.Composite_Pattern.Leaf;
+using oracle_backend.Patterns.Repository.Implementations;
+using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
-using System.Linq;
-using System.Threading.Tasks;
-using static oracle_backend.Controllers.AccountController;
 
 namespace oracle_backend.Controllers
 {
@@ -14,486 +12,312 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class AreasController : ControllerBase
     {
-        private readonly ComplexDbContext _context;
+        private readonly IAreaRepository _areaRepository;
+        private readonly IStoreRepository _storeRepository;
+        private readonly IParkingRepository _parkingRepository;
+        private readonly IVenueEventRepository _venueEventRepository;
         private readonly ILogger<AreasController> _logger;
 
-        public AreasController(ComplexDbContext context, ILogger<AreasController> logger)
+        public AreasController(
+            IAreaRepository areaRepository,
+            IStoreRepository storeRepository,
+            IParkingRepository parkingRepository,
+            IVenueEventRepository venueEventRepository,
+            ILogger<AreasController> logger)
         {
-            _context = context;
+            _areaRepository = areaRepository;
+            _storeRepository = storeRepository;
+            _parkingRepository = parkingRepository;
+            _venueEventRepository = venueEventRepository;
             _logger = logger;
         }
 
-        // DTO for creating an area
+        // ---------------------------------------------------------
+        // DTO 定义 (放在 Controller 内部或单独文件均可，这里为了方便直接包含)
+        // ---------------------------------------------------------
         public class AreaCreateDto
         {
             public int AreaId { get; set; }
-            public int IsEmpty { get; set; }
+            public int IsEmpty { get; set; } // 0 或 1
             public int? AreaSize { get; set; }
+
             [Required]
-            public string Category { get; set; } // "RETAIL", "EVENT"
-            // Retail-specific properties
+            public string Category { get; set; } // "RETAIL", "EVENT", "PARKING", "OTHER"
+
+            // Retail 特有
             public string? RentStatus { get; set; }
             public double? BaseRent { get; set; }
-            // Event-specific properties
+
+            // Event 特有
             public int? Capacity { get; set; }
-            public int? AreaFee { get; set; }
-            // 标识其它区域的类型，如卫生间、杂物间等
+            public int? AreaFee { get; set; } // 原定义为 int?
+
+            // Parking 特有
+            public int? ParkingFee { get; set; } // 原定义为 int?
+
+            // Other 特有
             public string? Type { get; set; }
-            public int? ParkingFee { get; set; }
         }
 
-        // POST: api/Areas (对应 2.3.1 添加新区域)
+        public class AreaUpdateDto
+        {
+            public int? IsEmpty { get; set; }
+            public int? AreaSize { get; set; }
+
+            // Retail
+            public string? RentStatus { get; set; }
+            public double? BaseRent { get; set; }
+
+            // Event
+            public int? Capacity { get; set; }
+            public int? AreaFee { get; set; }
+
+            // Parking
+            public int? ParkingFee { get; set; }
+
+            // Other
+            public string? Type { get; set; }
+        }
+        // ---------------------------------------------------------
+
+        // 辅助方法：手动组装 Composite 组件
+        private IAreaComponent CreateComponent(int areaId, string category)
+        {
+            return category.ToUpper() switch
+            {
+                "RETAIL" => new RetailLeaf(_areaRepository, _storeRepository, areaId),
+                "PARKING" => new ParkingLeaf(_areaRepository, _parkingRepository, areaId),
+                "EVENT" => new EventLeaf(_areaRepository, _venueEventRepository, areaId),
+                "OTHER" => new OtherLeaf(_areaRepository, areaId),
+                _ => throw new ArgumentException($"不支持的区域类型: {category}")
+            };
+        }
+
+        // POST: api/Areas
         [HttpPost]
         public async Task<IActionResult> CreateArea([FromBody] AreaCreateDto dto)
         {
-            var existingAreaCheck = await _context.Areas.FindAsync(dto.AreaId);
-
-            if (existingAreaCheck != null)
+            // 1. 检查是否存在 (Repo)
+            var existing = await _areaRepository.GetAreaByIdAsync(dto.AreaId);
+            if (existing != null)
             {
                 return BadRequest($"区域ID '{dto.AreaId}' 已存在。");
             }
 
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            // 2. 插入基表
+            var area = new Area
+            {
+                AREA_ID = dto.AreaId,
+                ISEMPTY = dto.IsEmpty,
+                AREA_SIZE = dto.AreaSize,
+                CATEGORY = dto.Category.ToUpper()
+            };
+
+            // 第一阶段：基表存入
             try
             {
-                if (dto.Category.ToUpper() == "RETAIL")
+                await _areaRepository.AddAsync(area);
+                await _areaRepository.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"基表数据插入失败: {dto.AreaId}");
+                return StatusCode(500, "服务器内部错误：基表创建失败");
+            }
+
+            // 第二阶段：使用组件处理子表
+            try
+            {
+                var component = CreateComponent(dto.AreaId, dto.Category);
+
+                // 构造配置包 (注意类型转换)
+                // 原 DTO 中 ParkingFee 和 AreaFee 是 int?，而 Configuration 中 Price 是 double?
+                // 显式转换 (double?) 可以解决类型不匹配警告
+                var config = new AreaConfiguration
                 {
-                    var retailArea = new RetailArea
+                    IsEmpty = dto.IsEmpty,
+                    AreaSize = dto.AreaSize,
+
+                    // 智能映射价格字段
+                    Price = dto.Category.ToUpper() switch
                     {
-                        AREA_ID = dto.AreaId,
-                        ISEMPTY = dto.IsEmpty,
-                        AREA_SIZE = dto.AreaSize,
-                        CATEGORY = dto.Category,
-                        RENT_STATUS = dto.RentStatus ?? "营业中",
-                        BASE_RENT = dto.BaseRent ?? 0
-                    };
-                    _context.Entry(retailArea).State = EntityState.Added;
-                }
-                else if (dto.Category.ToUpper() == "EVENT")
-                {
-                    var eventArea = new EventArea
-                    {
-                        AREA_ID = dto.AreaId,
-                        ISEMPTY = dto.IsEmpty,
-                        AREA_SIZE = dto.AreaSize,
-                        CATEGORY = dto.Category,
-                        CAPACITY = dto.Capacity,
-                        AREA_FEE = dto.AreaFee ?? 0
-                    };
-                    _context.Entry(eventArea).State = EntityState.Added;
-                }
-                else if (dto.Category.ToUpper() == "PARKING")
-                {
-                    var parkingLot = new ParkingLot
-                    {
-                        AREA_ID = dto.AreaId,
-                        ISEMPTY = dto.IsEmpty,
-                        AREA_SIZE = dto.AreaSize,
-                        CATEGORY = dto.Category,
-                        PARKING_FEE = dto.ParkingFee ?? 0
-                    };
-                    _context.Entry(parkingLot).State = EntityState.Added;
-                }
-                else if (dto.Category.ToUpper() == "OTHER")
-                {
-                    var otherArea = new OtherArea
-                    {
-                        AREA_ID = dto.AreaId,
-                        ISEMPTY = dto.IsEmpty,
-                        AREA_SIZE = dto.AreaSize,
-                        CATEGORY = dto.Category,
-                        TYPE = dto.Type ?? "未使用"
-                    };
-                    _context.Entry(otherArea).State = EntityState.Added;
-                }
-                else
-                {
-                    throw new ArgumentException("类别参数不合法");
-                }
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
+                        "RETAIL" => dto.BaseRent,                   // double? -> double?
+                        "PARKING" => (double?)dto.ParkingFee,       // int? -> double?
+                        "EVENT" => (double?)dto.AreaFee,            // int? -> double?
+                        _ => null
+                    },
+
+                    Status = dto.RentStatus,
+                    Capacity = dto.Capacity,
+                    TypeDescription = dto.Type
+                };
+
+                // Leaf 内部会调用 Repository 的 Upsert 方法
+                await component.UpdateInfoAsync(config);
 
                 return Ok(new { message = "区域创建成功" });
             }
             catch (Exception ex)
             {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, $"创建区域 {dto.AreaId} 失败。");
-                return StatusCode(500, "创建区域失败");
+                // 异常补偿：回滚基表
+                _logger.LogError(ex, $"子表创建失败，正在回滚基表数据: {dto.AreaId}");
+                try
+                {
+                    _areaRepository.Remove(area);
+                    await _areaRepository.SaveChangesAsync();
+                }
+                catch (Exception rollbackEx)
+                {
+                    _logger.LogError(rollbackEx, "回滚失败！");
+                }
+
+                return StatusCode(500, "创建区域失败: " + ex.Message);
             }
         }
 
-        // GET: api/Areas (对应 2.3.2 区域信息查询)
+        // GET: api/Areas/ByCategory
         [HttpGet("ByCategory")]
         public async Task<IActionResult> GetAreas([FromQuery] string? category, [FromQuery] int? isEmpty)
         {
-            var query = _context.Areas.AsQueryable();
+            // 使用 Repository 的条件查询功能
+            // 假设 IAreaRepository 继承自 IRepository<Area> 且有 FindAsync 或类似功能
+            // 这里使用 lambda 表达式筛选
+            var areas = await _areaRepository.FindAsync(a =>
+                (string.IsNullOrEmpty(category) || a.CATEGORY == category.ToUpper()) &&
+                (!isEmpty.HasValue || a.ISEMPTY == isEmpty.Value)
+            );
 
-            if (!string.IsNullOrEmpty(category))
+            var resultList = new List<object>();
+
+            foreach (var area in areas)
             {
-                query = query.Where(a => a.CATEGORY.ToUpper() == category.ToUpper());
+                var component = CreateComponent(area.AREA_ID, area.CATEGORY);
+                var info = await component.GetDetailsAsync();
+
+                if (info == null) continue;
+
+                // 映射回前端需要的匿名对象结构
+                resultList.Add(new
+                {
+                    AREA_ID = info.AreaId,
+                    ISEMPTY = info.IsEmpty,
+                    AREA_SIZE = info.AreaSize,
+                    CATEGORY = info.Category,
+
+                    // 多态字段还原
+                    BaseRent = info.Category == "RETAIL" ? info.Price : null,
+                    RentStatus = info.Category == "RETAIL" ? info.BusinessStatus : null,
+
+                    AreaFee = info.Category == "EVENT" ? info.Price : null,
+                    Capacity = info.Category == "EVENT" ? info.CapacityOrSpaces : null,
+
+                    ParkingFee = info.Category == "PARKING" ? (int?)info.Price : null,
+
+                    Type = info.Category == "OTHER" ? info.SubType : null
+                });
             }
 
-            if (isEmpty.HasValue)
-            {
-                query = query.Where(a => a.ISEMPTY == isEmpty.Value);
-            }
-
-            var result = await query.Select(a => new
-            {
-                a.AREA_ID,
-                a.ISEMPTY,
-                a.AREA_SIZE,
-                a.CATEGORY,
-                BaseRent = _context.RetailAreas
-                                .Where(ra => ra.AREA_ID == a.AREA_ID)
-                                .Select(ra => (double?)ra.BASE_RENT)
-                                .FirstOrDefault(),
-                RentStatus = _context.RetailAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => ea.RENT_STATUS)
-                               .FirstOrDefault(),
-                AreaFee = _context.EventAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => (double?)ea.AREA_FEE)
-                               .FirstOrDefault(),
-                Capacity = _context.EventAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => (int?)ea.CAPACITY)
-                               .FirstOrDefault(),
-                ParkingFee = _context.ParkingLots
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => ea.PARKING_FEE)
-                               .FirstOrDefault(),
-                Type = _context.OtherAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => ea.TYPE)
-                               .FirstOrDefault()
-            }).ToListAsync();
-            if (result == null)
-                return NotFound();
-            return Ok(result);
+            return Ok(resultList);
         }
+
+        // GET: api/Areas/ByID
         [HttpGet("ByID")]
         public async Task<IActionResult> GetAreasByID([FromQuery] int id)
         {
-            var query = _context.Areas.AsQueryable();
+            var area = await _areaRepository.GetAreaByIdAsync(id);
+            if (area == null) return NotFound();
 
-            query = query.Where(a => a.AREA_ID == id);
+            var component = CreateComponent(area.AREA_ID, area.CATEGORY);
+            var info = await component.GetDetailsAsync();
 
-            var result = await query.Select(a => new
+            if (info == null) return NotFound();
+
+            var result = new
             {
-                a.AREA_ID,
-                a.ISEMPTY,
-                a.AREA_SIZE,
-                a.CATEGORY,
-                BaseRent = _context.RetailAreas
-                                .Where(ra => ra.AREA_ID == a.AREA_ID)
-                                .Select(ra => (double?)ra.BASE_RENT)
-                                .FirstOrDefault(),
-                RentStatus = _context.RetailAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => ea.RENT_STATUS)
-                               .FirstOrDefault(),
-                AreaFee = _context.EventAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => (double?)ea.AREA_FEE)
-                               .FirstOrDefault(),
-                Capacity = _context.EventAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => (int?)ea.CAPACITY)
-                               .FirstOrDefault(),
-                ParkingFee = _context.ParkingLots
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => ea.PARKING_FEE)
-                               .FirstOrDefault(),
-                Type = _context.OtherAreas
-                               .Where(ea => ea.AREA_ID == a.AREA_ID)
-                               .Select(ea => ea.TYPE)
-                               .FirstOrDefault()
-            }).FirstOrDefaultAsync();
-            if (result == null)
-                return NotFound();
+                AREA_ID = info.AreaId,
+                ISEMPTY = info.IsEmpty,
+                AREA_SIZE = info.AreaSize,
+                CATEGORY = info.Category,
+                BaseRent = info.Category == "RETAIL" ? info.Price : null,
+                RentStatus = info.Category == "RETAIL" ? info.BusinessStatus : null,
+                AreaFee = info.Category == "EVENT" ? info.Price : null,
+                Capacity = info.Category == "EVENT" ? info.CapacityOrSpaces : null,
+                ParkingFee = info.Category == "PARKING" ? (int?)info.Price : null,
+                Type = info.Category == "OTHER" ? info.SubType : null
+            };
+
             return Ok(result);
         }
 
-        // DELETE: api/Areas/5 (对应 2.3.3 区域信息管理 - 删除)
-        [HttpDelete("{id}")]
-        public async Task<IActionResult> DeleteArea(int id)
-        {
-            // 关键前提检查：目标区域不能有正在执行的租用或活动记录
-            //var hasActiveRent = await _context.RentStores.AnyAsync(rs => rs.AREA_ID == id);
-            //if (hasActiveRent)
-            //{
-            //    return BadRequest("无法删除：该区域已被店铺租用。");
-            //}
-            var hasActiveRent = await _context.RentStores.FirstOrDefaultAsync(rs => rs.AREA_ID == id);
-            if (hasActiveRent != null)
-            {
-                return BadRequest("无法删除：该区域已被店铺租用。");
-            }
-
-            //var hasActiveEvent = await _context.VenueEventDetails.AnyAsync(ved => ved.AREA_ID == id);
-            //if (hasActiveEvent)
-            //{
-            //    return BadRequest("无法删除：该区域已有关联的场地活动。");
-            //}
-            var hasActiveEvent = await _context.RentStores.FirstOrDefaultAsync(rs => rs.AREA_ID == id);
-            if (hasActiveEvent != null)
-            {
-                return BadRequest("无法删除：该区域已被店铺租用。");
-            }
-
-            var hasParkingSpaces = await _context.ParkingSpaceDistributions.FirstOrDefaultAsync(rs => rs.AREA_ID == id);
-            if (hasActiveEvent != null)
-            {
-                return BadRequest("无法删除：请先清理该停车场上的停车位。");
-            }
-
-            var area = await _context.Areas.FindAsync(id);
-            if (area == null)
-            {
-                return NotFound();
-            }
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                //// 先删除子表记录
-                //if (area.CATEGORY.ToUpper() == "RETAIL")
-                //{
-                //    var retailArea = await _context.RetailAreas.FindAsync(id);
-                //    if (retailArea != null) _context.RetailAreas.Remove(retailArea);
-                //}
-                //else if (area.CATEGORY.ToUpper() == "EVENT")
-                //{
-                //    var eventArea = await _context.EventAreas.FindAsync(id);
-                //    if (eventArea != null) _context.EventAreas.Remove(eventArea);
-                //}
-
-                // 再删除主表记录
-                _context.Areas.Remove(area);
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(new { message = "区域删除成功" });
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, $"删除区域 {id} 失败。");
-                return StatusCode(500, "服务器内部错误");
-            }
-        }
-
-        //用来更新区域信息的DTO
-        public class AreaUpdateDto
-        {
-            // Area 表中的通用属性
-            public int? IsEmpty { get; set; }
-            public int? AreaSize { get; set; }
-
-            // RetailArea 特有属性
-            public string? RentStatus { get; set; }
-            public double? BaseRent { get; set; }
-
-            // EventArea 特有属性
-            public int? Capacity { get; set; }
-            public int? AreaFee { get; set; }
-
-            // ParkingLot 特有属性
-            public int? ParkingFee { get; set; }
-
-            // OtherArea 特有属性
-            public string? Type { get; set; }
-        }
-        // 修改区域信息的接口
+        // PUT: api/Areas/5
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateArea(int id, [FromBody] AreaUpdateDto dto)
         {
-            // 开启事务，确保所有操作的原子性
-            using var transaction = await _context.Database.BeginTransactionAsync();
+            var area = await _areaRepository.GetAreaByIdAsync(id);
+            if (area == null) return NotFound($"未找到ID为 '{id}' 的区域。");
+
             try
             {
-                // 查找并更新基表记录
-                var areaToUpdate = await _context.Areas.FindAsync(id);
+                var component = CreateComponent(id, area.CATEGORY);
 
-                if (areaToUpdate == null)
+                var config = new AreaConfiguration
                 {
-                    return NotFound($"未找到ID为 '{id}' 的区域。");
-                }
+                    IsEmpty = dto.IsEmpty,
+                    AreaSize = dto.AreaSize,
 
-                // 更新基表属性
-                if (dto.IsEmpty.HasValue) areaToUpdate.ISEMPTY = dto.IsEmpty.Value;
-                if (dto.AreaSize.HasValue) areaToUpdate.AREA_SIZE = dto.AreaSize.Value;
-                _context.Entry(areaToUpdate).State = EntityState.Modified;
+                    // 映射价格
+                    Price = area.CATEGORY.ToUpper() switch
+                    {
+                        "RETAIL" => dto.BaseRent,
+                        "PARKING" => dto.ParkingFee.HasValue ? (double)dto.ParkingFee.Value : null,
+                        "EVENT" => dto.AreaFee.HasValue ? (double)dto.AreaFee.Value : null,
+                        _ => null
+                    },
 
-                // 在一个 switch 语句内处理子表的修复（INSERT）或更新（UPDATE）
-                switch (areaToUpdate.CATEGORY.ToUpper())
-                {
-                    case "RETAIL":
-                        var retailArea = await _context.RetailAreas.FindAsync(id);
-                        if (retailArea == null)
-                        {
-                            // 子表记录缺失，插入数据
-                            var rentStatus = dto.RentStatus ?? "正常营业";
-                            var baseRent = dto.BaseRent ?? 0;
-                            await _context.Database.ExecuteSqlInterpolatedAsync(
-                                $"INSERT INTO RETAIL_AREA (AREA_ID, RENT_STATUS, BASE_RENT) VALUES ({id}, {rentStatus}, {baseRent})");
-                        }
-                        else
-                        {
-                            // 子表记录存在，执行更新
-                            if (dto.RentStatus != null) retailArea.RENT_STATUS = dto.RentStatus;
-                            if (dto.BaseRent.HasValue) retailArea.BASE_RENT = dto.BaseRent.Value;
-                            _context.Entry(retailArea).State = EntityState.Modified;
-                        }
-                        break;
+                    Status = dto.RentStatus,
+                    Capacity = dto.Capacity,
+                    TypeDescription = dto.Type
+                };
 
-                    case "EVENT":
-                        var eventArea = await _context.EventAreas.FindAsync(id);
-                        if (eventArea == null)
-                        {
-                            // 子表记录缺失，插入数据
-                            var capacity = dto.Capacity ?? 0;
-                            var areaFee = dto.AreaFee ?? 0;
-                            await _context.Database.ExecuteSqlInterpolatedAsync(
-                                $"INSERT INTO EVENT_AREA (AREA_ID, CAPACITY, AREA_FEE) VALUES ({id}, {capacity}, {areaFee})");
-                        }
-                        else
-                        {
-                            // 子表记录存在，执行更新
-                            if (dto.Capacity.HasValue) eventArea.CAPACITY = dto.Capacity.Value;
-                            if (dto.AreaFee.HasValue) eventArea.AREA_FEE = dto.AreaFee.Value;
-                            _context.Entry(eventArea).State = EntityState.Modified;
-                        }
-                        break;
-
-                    case "PARKING":
-                        var parkingLot = await _context.ParkingLots.FindAsync(id);
-                        if (parkingLot == null)
-                        {
-                            // 子表记录缺失，插入数据
-                            var parkingFee = dto.ParkingFee ?? 0;
-                            await _context.Database.ExecuteSqlInterpolatedAsync(
-                                $"INSERT INTO PARKING_LOT (AREA_ID, PARKING_FEE) VALUES ({id}, {parkingFee})");
-                        }
-                        else
-                        {
-                            // 子表记录存在，执行更新
-                            if (dto.ParkingFee.HasValue) parkingLot.PARKING_FEE = dto.ParkingFee.Value;
-                            _context.Entry(parkingLot).State = EntityState.Modified;
-                        }
-                        break;
-
-                    case "OTHER":
-                        var otherArea = await _context.OtherAreas.FindAsync(id);
-                        if (otherArea == null)
-                        {
-                            // 子表记录缺失，插入数据
-                            var type = dto.Type ?? "未知";
-                            await _context.Database.ExecuteSqlInterpolatedAsync(
-                                $"INSERT INTO OTHER_AREA (AREA_ID, TYPE) VALUES ({id}, {type})");
-                        }
-                        else
-                        {
-                            // 子表记录存在，执行更新
-                            if (dto.Type != null) otherArea.TYPE = dto.Type;
-                            _context.Entry(otherArea).State = EntityState.Modified;
-                        }
-                        break;
-                }
-
-                // 提交所有更改
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
+                await component.UpdateInfoAsync(config);
 
                 return Ok(new { message = "区域信息更新成功" });
             }
             catch (Exception ex)
             {
-                // 如果发生任何错误，回滚所有操作
-                await transaction.RollbackAsync();
                 _logger.LogError(ex, $"更新区域 {id} 失败。");
                 return StatusCode(500, "更新区域信息失败，服务器内部错误。");
             }
         }
 
-        // 区域租赁详情查询DTO
-        public class TenantAreaDetailsDto
+        // DELETE: api/Areas/5
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteArea(int id)
         {
-            // 商户的详细信息
-            public Store StoreInfo { get; set; }
+            var area = await _areaRepository.GetAreaByIdAsync(id);
+            if (area == null) return NotFound();
 
-            // 该商户租赁的区域列表
-            public List<RetailAreaDto> RentedAreas { get; set; }
-        }
+            // 1. 构建组件
+            var component = CreateComponent(id, area.CATEGORY);
 
-        // 为RetailArea创建一个DTO，方便返回给前端
-        public class RetailAreaDto
-        {
-            public int AreaId { get; set; }
-            public int IsEmpty { get; set; }
-            public int? AreaSize { get; set; }
-            public string RentStatus { get; set; }
-            public double BaseRent { get; set; }
-        }
-        //获取对应租户的店铺和租赁区域详情
-        [HttpGet("tenant-dashboard")]
-        public async Task<IActionResult> GetMyStoreAndAreaDetails([FromQuery, Required] string tenantAccount)
-        {
+            // 2. 校验删除条件 (Repo 负责检查依赖)
+            var error = await component.ValidateDeleteConditionAsync();
+            if (error != null)
+            {
+                return BadRequest(error);
+            }
+
+            // 3. 执行删除
             try
             {
-                // 1. 根据商户账号找到关联的 Store
-                var storeLink = await _context.StoreAccounts
-                                                     .Include(sa => sa.storeNavigation) // **关键：预加载 Store 信息**
-                                                     .FirstOrDefaultAsync(sa => sa.ACCOUNT == tenantAccount);
-
-                if (storeLink == null || storeLink.storeNavigation == null)
-                {
-                    return NotFound("未找到与此账号关联的店铺信息。");
-                }
-
-                var store = storeLink.storeNavigation;
-
-                // 2. 根据 Store ID 查找其租赁的区域
-                var rentedAreaIds = await _context.RentStores
-                                                        .Where(rs => rs.STORE_ID == store.STORE_ID)
-                                                        .Select(rs => rs.AREA_ID)
-                                                        .ToListAsync();
-
-                List<RetailArea> rentedAreas = new List<RetailArea>();
-                if (rentedAreaIds.Any())
-                {
-                    rentedAreas = await _context.RetailAreas
-                                                      .Where(area => rentedAreaIds.Contains(area.AREA_ID))
-                                                      .ToListAsync();
-                }
-
-                // 3. 组装最终的 DTO
-                var responseDto = new TenantAreaDetailsDto
-                {
-                    // 【核心修改】直接将整个 store 对象赋值给 StoreInfo
-                    StoreInfo = store,
-
-                    // RentedAreas 的映射保持不变
-                    RentedAreas = rentedAreas.Select(area => new RetailAreaDto
-                    {
-                        AreaId = area.AREA_ID,
-                        IsEmpty = area.ISEMPTY,
-                        AreaSize = area.AREA_SIZE,
-                        RentStatus = area.RENT_STATUS,
-                        BaseRent = area.BASE_RENT
-                    }).ToList()
-                };
-
-                return Ok(responseDto);
+                _areaRepository.Remove(area);
+                await _areaRepository.SaveChangesAsync();
+                return Ok(new { message = "区域删除成功" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"获取商户 {tenantAccount} 的店铺和区域信息时出错。");
-                return StatusCode(500, $"获取商户 {tenantAccount} 的店铺和区域信息时出错。");
+                _logger.LogError(ex, $"删除区域 {id} 失败。");
+                return StatusCode(500, "服务器内部错误");
             }
         }
     }
