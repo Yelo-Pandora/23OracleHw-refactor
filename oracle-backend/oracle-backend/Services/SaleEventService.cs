@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using oracle_backend.Models;
 using Microsoft.Extensions.Logging;
-using oracle_backend.Patterns.Repository.Interfaces; // 引入 Repository 接口
+using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Patterns.Factory.Interfaces; // [新增] 引入工厂接口
 
 namespace oracle_backend.Services
 {
@@ -24,13 +26,17 @@ namespace oracle_backend.Services
 
     public class SaleEventService : ISaleEventService
     {
-        // 依赖注入 Repository 而不是 DbContext
         private readonly ISaleEventRepository _repo;
+        private readonly ISaleEventFactory _factory; // [新增] 注入工厂
         private readonly ILogger<SaleEventService> _logger;
 
-        public SaleEventService(ISaleEventRepository repo, ILogger<SaleEventService> logger)
+        public SaleEventService(
+            ISaleEventRepository repo,
+            ISaleEventFactory factory, // [新增] 构造函数注入
+            ILogger<SaleEventService> logger)
         {
             _repo = repo;
+            _factory = factory;
             _logger = logger;
         }
 
@@ -39,12 +45,8 @@ namespace oracle_backend.Services
             try
             {
                 _logger.LogInformation("开始获取所有促销活动");
-                // 调用 BaseRepository 的 GetAllAsync
                 var result = await _repo.GetAllAsync();
-
-                // 注意：BaseRepository 返回的是 IEnumerable，这里转为 List 以匹配接口
                 var list = result.ToList();
-
                 _logger.LogInformation($"成功获取 {list.Count} 条促销活动记录");
                 return list;
             }
@@ -60,19 +62,12 @@ namespace oracle_backend.Services
             if (dto.EventStart > dto.EventEnd)
                 throw new ArgumentException("结束时间必须晚于开始时间");
 
-            // 业务逻辑：手动生成 ID
+            // 获取 ID 的逻辑属于数据访问层/业务规则，依然保留在 Service
             int maxId = await _repo.GetMaxEventIdAsync();
             int newId = maxId + 1;
 
-            var saleEvent = new SaleEvent
-            {
-                EVENT_ID = newId,
-                EVENT_NAME = dto.EventName,
-                Cost = dto.Cost,
-                EVENT_START = dto.EventStart,
-                EVENT_END = dto.EventEnd,
-                Description = dto.Description,
-            };
+            // [重构] 使用工厂创建实体，替代直接 new SaleEvent
+            var saleEvent = _factory.CreateSaleEvent(newId, dto);
 
             await _repo.AddAsync(saleEvent);
             await _repo.SaveChangesAsync();
@@ -86,7 +81,7 @@ namespace oracle_backend.Services
             if (saleEvent == null)
                 throw new KeyNotFoundException("促销活动不存在");
 
-            // 更新字段业务逻辑
+            // 更新现有实体的逻辑通常保留在 Service，或者使用 Mapper
             if (!string.IsNullOrEmpty(dto.EventName))
                 saleEvent.EVENT_NAME = dto.EventName;
 
@@ -131,15 +126,12 @@ namespace oracle_backend.Services
             // 模拟调用外部系统获取数据
             var reportData = await FetchSalesDataFromExternalSystem(saleEvent);
 
-            return new SaleEventReport
-            {
-                EventId = saleEvent.EVENT_ID,
-                EventName = saleEvent.EVENT_NAME,
-                SalesIncrement = reportData.SalesIncrement,
-                Cost = saleEvent.Cost,
-                ROI = CalculateROI(reportData.SalesIncrement, saleEvent.Cost),
-                CouponRedemptionRate = reportData.CouponRedemptionRate
-            };
+            // [重构] 使用工厂创建报表对象，ROI 计算逻辑已移至工厂内部
+            return _factory.CreateReport(
+                saleEvent,
+                reportData.SalesIncrement,
+                reportData.CouponRedemptionRate
+            );
         }
 
         public async Task AddStoreToEventAsync(int eventId, int storeId)
@@ -150,11 +142,8 @@ namespace oracle_backend.Services
             if (existing != null)
                 throw new Exception("商铺已参与该活动");
 
-            var partStore = new PartStore
-            {
-                EVENT_ID = eventId,
-                STORE_ID = storeId
-            };
+            // [重构] 使用工厂创建多对多关联实体
+            var partStore = _factory.CreatePartStore(eventId, storeId);
 
             await _repo.AddPartStoreAsync(partStore);
             await _repo.SaveChangesAsync();
@@ -173,22 +162,17 @@ namespace oracle_backend.Services
 
         public async Task<List<Store>> GetStoresByEventAsync(int eventId)
         {
-            // Join 逻辑已封装在 Repository 中
             return await _repo.GetStoresByEventIdAsync(eventId);
         }
 
         public async Task<List<SaleEvent>> GetEventsByStoreAsync(int storeId)
         {
-            // Join 逻辑已封装在 Repository 中
             return await _repo.GetEventsByStoreIdAsync(storeId);
         }
 
-        // --- 私有辅助方法保持不变 ---
+        // --- 私有辅助方法 ---
 
-        private double CalculateROI(double salesIncrement, double cost)
-        {
-            return cost == 0 ? 0 : (salesIncrement - cost) / cost;
-        }
+        // [移除] CalculateROI 已移动到 SaleEventFactory 中
 
         private async Task<(double SalesIncrement, double CouponRedemptionRate)>
             FetchSalesDataFromExternalSystem(SaleEvent saleEvent)

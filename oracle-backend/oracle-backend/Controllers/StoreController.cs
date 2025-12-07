@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Patterns.Factory.Interfaces;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Cryptography;
 using System.Text;
@@ -14,6 +15,7 @@ namespace oracle_backend.Controllers
     {
         private readonly IStoreRepository _storeRepo;
         private readonly IAccountRepository _accountRepo;
+        private readonly IStoreFactory _storeFactory;
         // 保留 Context 用于尚未迁移的复杂业务逻辑
         private readonly StoreDbContext _legacyContext;
         private readonly ILogger<StoreController> _logger;
@@ -21,11 +23,13 @@ namespace oracle_backend.Controllers
         public StoreController(
             IStoreRepository storeRepo,
             IAccountRepository accountRepo,
+            IStoreFactory storeFactory,
             StoreDbContext legacyContext,
             ILogger<StoreController> logger)
         {
             _storeRepo = storeRepo;
             _accountRepo = accountRepo;
+            _storeFactory = storeFactory;
             _legacyContext = legacyContext;
             _logger = logger;
         }
@@ -56,15 +60,7 @@ namespace oracle_backend.Controllers
                 if (await _storeRepo.AreaIdExists(dto.AreaId))
                     return BadRequest(new { error = "该区域ID已存在，请重新设置" });
 
-                var retailArea = new RetailArea
-                {
-                    AREA_ID = dto.AreaId,
-                    ISEMPTY = 1,
-                    AREA_SIZE = dto.AreaSize,
-                    CATEGORY = "RETAIL",
-                    RENT_STATUS = "空置",
-                    BASE_RENT = dto.BaseRent
-                };
+                var retailArea = _storeFactory.CreateRetailArea(dto);
 
                 // TPT 继承验证见文末
                 await _storeRepo.AddRetailAreaAsync(retailArea);
@@ -98,58 +94,38 @@ namespace oracle_backend.Controllers
 
             try
             {
-                if (!await _accountRepo.CheckAuthority(dto.OperatorAccount, 1))
-                    return BadRequest(new { error = "权限不足" });
+                if (!await _accountRepo.CheckAuthority(dto.OperatorAccount, 1)) return BadRequest("权限不足");
+                if (dto.RentEnd <= dto.RentStart) return BadRequest("时间错误");
+                if (!await _storeRepo.IsAreaAvailable(dto.AreaId)) return BadRequest("店面已租用");
+                if (await _storeRepo.TenantExists(dto.TenantName, dto.ContactInfo)) return BadRequest("租户已存在");
 
-                if (dto.RentEnd <= dto.RentStart) return BadRequest(new { error = "租用结束时间必须晚于起始时间" });
-
-                if (!await _storeRepo.IsAreaAvailable(dto.AreaId))
-                    return BadRequest(new { error = "该店面已租用" });
-
-                if (await _storeRepo.TenantExists(dto.TenantName, dto.ContactInfo))
-                    return BadRequest(new { error = "该租户已存在" });
-
-                // 核心业务：创建店铺 -> 关联区域 -> 更新区域 -> 创建账号 -> 关联账号
+                // 1. 获取 ID (Repo 职责)
                 var storeId = await _storeRepo.GetNextStoreId();
 
-                var store = new Store
-                {
-                    STORE_ID = storeId,
-                    STORE_NAME = dto.StoreName,
-                    STORE_STATUS = "正常营业",
-                    STORE_TYPE = dto.StoreType,
-                    TENANT_NAME = dto.TenantName,
-                    CONTACT_INFO = dto.ContactInfo,
-                    RENT_START = dto.RentStart,
-                    RENT_END = dto.RentEnd
-                };
-                await _storeRepo.AddAsync(store);
+                // 2. [重构] 使用工厂创建所有相关实体 (Store, RentStore, Account, StoreAccount)
+                //    这里封装了密码生成、默认状态、实体关联等逻辑
+                var agg = _storeFactory.CreateMerchantAggregate(dto, storeId);
 
-                var rentStore = new RentStore { STORE_ID = storeId, AREA_ID = dto.AreaId };
-                await _storeRepo.AddRentStore(rentStore);
+                // 3. 持久化 (Repo 职责)
+                await _storeRepo.AddAsync(agg.Store);
+                await _storeRepo.AddRentStore(agg.RentStore);
+                await _accountRepo.AddAsync(agg.Account);
+                await _accountRepo.AddStoreAccountLink(agg.StoreAccount);
 
+                // 更新区域状态
                 await _storeRepo.UpdateAreaStatus(dto.AreaId, false, "已租用");
-
-                var accountName = $"store_{storeId:D6}";
-                var initialPassword = GenerateRandomPassword(8);
-                var merchantAccount = new Account
-                {
-                    ACCOUNT = accountName,
-                    PASSWORD = initialPassword,
-                    USERNAME = dto.TenantName,
-                    IDENTITY = "商户",
-                    AUTHORITY = 4
-                };
-                await _accountRepo.AddAsync(merchantAccount);
-
-                var storeAccount = new StoreAccount { ACCOUNT = accountName, STORE_ID = storeId };
-                await _accountRepo.AddStoreAccountLink(storeAccount);
 
                 // 统一提交
                 await _storeRepo.SaveChangesAsync();
                 await _accountRepo.SaveChangesAsync();
 
-                return Ok(new { message = "商户创建成功", storeId, account = accountName, initialPassword });
+                return Ok(new
+                {
+                    message = "商户创建成功",
+                    storeId,
+                    account = agg.Account.ACCOUNT,
+                    initialPassword = agg.GeneratedPassword // 返回给前端
+                });
             }
             catch (Exception ex)
             {
@@ -173,26 +149,12 @@ namespace oracle_backend.Controllers
                 if (await _storeRepo.TenantExists(dto.TenantName, dto.ContactInfo)) return BadRequest(new { error = "租户已存在" });
 
                 var storeId = await _storeRepo.GetNextStoreId();
-                var store = new Store
-                {
-                    STORE_ID = storeId,
-                    STORE_NAME = dto.StoreName,
-                    STORE_STATUS = "正常营业",
-                    STORE_TYPE = dto.StoreType,
-                    TENANT_NAME = dto.TenantName,
-                    CONTACT_INFO = dto.ContactInfo,
-                    RENT_START = dto.RentStart,
-                    RENT_END = dto.RentEnd
-                };
-                await _storeRepo.AddAsync(store);
+                var result = _storeFactory.CreateMerchantWithExistingAccount(dto, storeId);
 
-                var rentStore = new RentStore { STORE_ID = storeId, AREA_ID = dto.AreaId };
-                await _storeRepo.AddRentStore(rentStore);
-
+                await _storeRepo.AddAsync(result.Store);
+                await _storeRepo.AddRentStore(result.RentStore);
+                await _accountRepo.AddStoreAccountLink(result.Link);
                 await _storeRepo.UpdateAreaStatus(dto.AreaId, false, "已租用");
-
-                var storeAccount = new StoreAccount { ACCOUNT = dto.OperatorAccount, STORE_ID = storeId };
-                await _accountRepo.AddStoreAccountLink(storeAccount);
 
                 await _storeRepo.SaveChangesAsync();
                 await _accountRepo.SaveChangesAsync();
