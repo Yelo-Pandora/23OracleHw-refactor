@@ -1,10 +1,12 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Patterns.State.Equipment;
 using System.ComponentModel.DataAnnotations;
 
 namespace oracle_backend.Controllers
 {
+    // Refactored with State Pattern
     [ApiController]
     [Route("api/[controller]")]
     public class EquipmentController : ControllerBase
@@ -21,6 +23,19 @@ namespace oracle_backend.Controllers
             _equipRepo = equipRepo;
             _accountRepo = accountRepo;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// 创建设备状态上下文 (Refactored with State Pattern)
+        /// </summary>
+        private EquipmentStateContext CreateEquipmentStateContext(Equipment equipment)
+        {
+            return new EquipmentStateContext(
+                equipment.EQUIPMENT_ID,
+                equipment.EQUIPMENT_TYPE,
+                equipment.EQUIPMENT_STATUS,
+                _logger
+            );
         }
 
         // 2.9.1 查看设备列表
@@ -179,6 +194,7 @@ namespace oracle_backend.Controllers
         private static readonly string[] StandbyLightActions = { "开灯", "紧急停止" };
         private static readonly string[] StandbyElevatorActions = { "启动", "紧急停止" };
 
+        // Refactored with State Pattern - 使用状态模式获取可用操作
         [HttpGet("ActionsList")]
         public async Task<IActionResult> GetAvailableActions([FromQuery] int id, [FromQuery] string OperatorID)
         {
@@ -208,40 +224,42 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // 2. 业务逻辑 - Refactored with State Pattern
                 var equipment = await _equipRepo.GetByIdAsync(id);
                 if (equipment == null)
                     return NotFound("设备不存在");
 
-                List<string> actions = new List<string>();
-                switch (equipment.EQUIPMENT_STATUS)
+                // 使用状态模式获取允许的操作
+                var stateContext = CreateEquipmentStateContext(equipment);
+                var actions = stateContext.GetAllowedOperations();
+
+                // 根据设备类型添加具体操作
+                if (stateContext.CurrentStateName == EquipmentStatus.Running)
                 {
-                    case EquipmentStatus.Running:
-                        actions.AddRange(equipment.EQUIPMENT_TYPE.ToLower() switch
-                        {
-                            "空调" => AirConditionerActions,
-                            "照明" => LightingActions,
-                            "电梯" => ElevatorActions,
-                            _ => Array.Empty<string>()
-                        });
-                        break;
-                    case EquipmentStatus.Standby:
-                        actions.AddRange(equipment.EQUIPMENT_TYPE.ToLower() switch
-                        {
-                            "空调" => StandbyAirActions,
-                            "照明" => StandbyLightActions,
-                            "电梯" => StandbyElevatorActions,
-                            _ => Array.Empty<string>()
-                        });
-                        break;
-                    case EquipmentStatus.UnderMaintenance:
-                    case EquipmentStatus.Faulted:
-                        actions.Add("当前状态不可操作");
-                        break;
-                    case EquipmentStatus.Discarded:
-                        actions.Add("设备已废弃，不可操作");
-                        break;
+                    actions.AddRange(equipment.EQUIPMENT_TYPE.ToLower() switch
+                    {
+                        "空调" => AirConditionerActions,
+                        "照明" => LightingActions,
+                        "电梯" => ElevatorActions,
+                        _ => Array.Empty<string>()
+                    });
                 }
+                else if (stateContext.CurrentStateName == EquipmentStatus.Standby)
+                {
+                    actions.AddRange(equipment.EQUIPMENT_TYPE.ToLower() switch
+                    {
+                        "空调" => StandbyAirActions,
+                        "照明" => StandbyLightActions,
+                        "电梯" => StandbyElevatorActions,
+                        _ => Array.Empty<string>()
+                    });
+                }
+
+                if (!actions.Any())
+                {
+                    actions.Add($"当前状态 {stateContext.CurrentStateName} 不可操作");
+                }
+
                 return Ok(actions);
             }
             catch (Exception ex)
@@ -258,7 +276,7 @@ namespace oracle_backend.Controllers
             public string Operation { get; set; }
         }
 
-        // 操作设备
+        // Refactored with State Pattern - 使用状态模式操作设备
         [HttpPost("operate")]
         public async Task<IActionResult> OperateEquipment([FromBody] EquipmentOperationDto dto)
         {
@@ -288,81 +306,57 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // 2. 业务逻辑 - Refactored with State Pattern
                 var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentID);
                 if (equipment == null) return NotFound("未找到该设备");
-                if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Discarded)
-                    return BadRequest("该设备已被弃用，无法操作");
 
                 string originalStatus = equipment.EQUIPMENT_STATUS;
 
-                if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Offline ||
-                    equipment.EQUIPMENT_STATUS == EquipmentStatus.UnderMaintenance ||
-                    equipment.EQUIPMENT_STATUS == EquipmentStatus.Faulted)
-                {
-                    return BadRequest($"设备当前状态为{equipment.EQUIPMENT_STATUS}，不可操作");
-                }
+                // 使用状态模式处理操作
+                var stateContext = CreateEquipmentStateContext(equipment);
 
-                // 特殊情况，设备制停
-                if (dto.Operation == "紧急停止")
-                {
-                    equipment.EQUIPMENT_STATUS = EquipmentStatus.Faulted;
-                    _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, EquipmentStatus.Faulted);
-                    _logger.LogInformation($"设备{dto.EquipmentID}紧急停止成功，状态变更为故障");
-
-                    _equipRepo.Update(equipment);
-                    await _equipRepo.SaveChangesAsync();
-
-                    return Ok(new
-                    {
-                        status = equipment.EQUIPMENT_STATUS,
-                        result = "紧急制停操作成功，设备已进入故障状态",
-                        statusChanged = true
-                    });
-                }
-
-                if (!IsOperationValidForStatus(dto.Operation, equipment.EQUIPMENT_STATUS, equipment.EQUIPMENT_TYPE))
-                {
-                    return BadRequest("当前状态下不支持此操作");
-                }
-
-                bool result = SimulateDeviceOperation();
-
-                if (result)
-                {
-                    string newStatus = MapOperationToStatus(
-                        dto.Operation,
-                        equipment.EQUIPMENT_STATUS,
-                        equipment.EQUIPMENT_TYPE
-                    );
-
-                    if (equipment.EQUIPMENT_STATUS != newStatus)
-                    {
-                        equipment.EQUIPMENT_STATUS = newStatus;
-                        _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, newStatus);
-                        _logger.LogInformation($"设备{dto.EquipmentID}状态变更:{originalStatus} -> {newStatus}");
-                    }
-                    _logger.LogInformation("操作成功:设备={EquipmentId}, 操作员={Operator}, 操作={Operation}",
-                        dto.EquipmentID, dto.OperatorID, dto.Operation);
-                }
-                else
+                // 模拟设备操作
+                bool simulationSuccess = SimulateDeviceOperation();
+                if (!simulationSuccess)
                 {
                     _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, false, originalStatus, originalStatus);
                     _logger.LogWarning("操作失败:设备={EquipmentId},操作员={Operator},操作={Operation}",
                         dto.EquipmentID, dto.OperatorID, dto.Operation);
+                    return BadRequest("指令发送失败，请重试");
                 }
+
+                // 通过状态模式执行操作
+                var operationResult = stateContext.PerformOperation(dto.Operation, equipment.EQUIPMENT_TYPE);
+
+                if (!operationResult.Success)
+                {
+                    _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, false, originalStatus, originalStatus);
+                    return BadRequest(operationResult.Message);
+                }
+
+                // 更新设备状态到数据库
+                equipment.EQUIPMENT_STATUS = stateContext.CurrentStateName;
+                
+                _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, 
+                    originalStatus, equipment.EQUIPMENT_STATUS);
+
+                if (operationResult.StatusChanged)
+                {
+                    _logger.LogInformation($"设备{dto.EquipmentID}状态变更:{originalStatus} -> {equipment.EQUIPMENT_STATUS}");
+                }
+
+                _logger.LogInformation("操作成功:设备={EquipmentId}, 操作员={Operator}, 操作={Operation}",
+                    dto.EquipmentID, dto.OperatorID, dto.Operation);
 
                 _equipRepo.Update(equipment);
                 await _equipRepo.SaveChangesAsync();
 
-                return result ?
-                    Ok(new
-                    {
-                        status = equipment.EQUIPMENT_STATUS,
-                        result = "操作成功",
-                        statusChanged = equipment.EQUIPMENT_STATUS != originalStatus
-                    }) :
-                    BadRequest("指令发送失败，请重试");
+                return Ok(new
+                {
+                    status = equipment.EQUIPMENT_STATUS,
+                    result = operationResult.Message,
+                    statusChanged = operationResult.StatusChanged
+                });
             }
             catch (Exception ex)
             {
@@ -513,6 +507,7 @@ namespace oracle_backend.Controllers
             public DateTime RepairStart { get; set; }
         }
 
+        // Refactored with State Pattern - 使用状态模式创建维修工单
         [HttpPost("CreateOrder")]
         public async Task<IActionResult> CreateOrder([FromBody] CreateOrderDto dto)
         {
@@ -542,18 +537,22 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // 2. 业务逻辑 - Refactored with State Pattern
                 var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentId);
                 if (equipment == null)
                     return NotFound("设备不存在");
 
-                if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Discarded)
-                    return BadRequest("该设备已被弃用");
+                // 使用状态模式检查是否可以创建维修工单
+                var stateContext = CreateEquipmentStateContext(equipment);
+                if (!stateContext.CanCreateRepairOrder())
+                {
+                    return BadRequest($"设备当前状态 {stateContext.CurrentStateName} 无法创建维修工单");
+                }
 
-                if (equipment.EQUIPMENT_STATUS != EquipmentStatus.Faulted)
-                    return BadRequest("该设备正常或正在维修中");
+                // 转换到维修中状态
+                stateContext.TransitionToState(EquipmentStatus.UnderMaintenance, $"创建维修工单: {dto.FaultDescription}");
+                equipment.EQUIPMENT_STATUS = stateContext.CurrentStateName;
 
-                equipment.EQUIPMENT_STATUS = EquipmentStatus.UnderMaintenance;
                 var STAFF_ID = await GetRepairStaff();
                 if (STAFF_ID == 0)
                     return BadRequest("暂无维修人员，无法维修");
@@ -572,8 +571,8 @@ namespace oracle_backend.Controllers
                 };
 
                 await _equipRepo.AddRepairOrderAsync(newOrder);
-                _equipRepo.Update(equipment); // 记得更新设备状态
-                await _equipRepo.SaveChangesAsync(); // 统一保存
+                _equipRepo.Update(equipment);
+                await _equipRepo.SaveChangesAsync();
 
                 _logger.LogInformation("设备账号 {EquipmentId}, 因 {FaultDescription} 处于维修中", dto.EquipmentId, dto.FaultDescription);
                 return Ok(new
@@ -624,6 +623,7 @@ namespace oracle_backend.Controllers
             }
         }
 
+        // Refactored with State Pattern - 使用状态模式确认维修
         [HttpPost("confirm-repair")]
         public async Task<IActionResult> ConfirmRepair([FromBody] OrderKeyDto dto)
         {
@@ -652,7 +652,7 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // 2. 业务逻辑 - Refactored with State Pattern
                 var order = await _equipRepo.GetRepairOrderAsync(
                     dto.EquipmentId, dto.StaffId, dto.RepairStart);
 
@@ -665,23 +665,22 @@ namespace oracle_backend.Controllers
                 if (equipment == null)
                     return NotFound("设备不存在");
 
-                if (equipment.EQUIPMENT_STATUS != EquipmentStatus.UnderMaintenance)
+                // 使用状态模式处理维修完成
+                var stateContext = CreateEquipmentStateContext(equipment);
+                
+                if (stateContext.CurrentStateName != EquipmentStatus.UnderMaintenance)
                     return BadRequest("工单已确认，无需再次操作");
 
-                if (order.REPAIR_COST > 0)
-                {
-                    equipment.EQUIPMENT_STATUS = EquipmentStatus.Running;
-                    _equipRepo.Update(equipment);
-                    await _equipRepo.SaveChangesAsync();
-                    return Ok("设备状态已更新为正常运行");
-                }
-                else
-                {
-                    equipment.EQUIPMENT_STATUS = EquipmentStatus.Faulted;
-                    _equipRepo.Update(equipment);
-                    await _equipRepo.SaveChangesAsync();
-                    return Ok("维修失败，等待再次分配工单");
-                }
+                // 根据维修费用判断维修是否成功
+                bool repairSuccess = order.REPAIR_COST > 0;
+                stateContext.CompleteRepair(repairSuccess);
+
+                // 更新设备状态
+                equipment.EQUIPMENT_STATUS = stateContext.CurrentStateName;
+                _equipRepo.Update(equipment);
+                await _equipRepo.SaveChangesAsync();
+
+                return Ok(repairSuccess ? "设备状态已更新为正常运行" : "维修失败，等待再次分配工单");
             }
             catch (Exception ex)
             {
