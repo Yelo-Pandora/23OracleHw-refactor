@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using oracle_backend.Models;
+using oracle_backend.patterns.Chain_of_Responsibility;
 
 namespace oracle_backend.Dbcontexts
 {
@@ -388,77 +389,41 @@ namespace oracle_backend.Dbcontexts
         #region 车辆出入计费功能
 
         /// <summary>
-        /// 车辆入场 - 简化版本，分步执行
+        /// 车辆入场 - 使用责任链模式重构（优化版本）
+        /// 将入场逻辑拆解为独立的校验处理者，提高代码的可维护性和扩展性
+        /// 优化：使用异常处理机制，代码更简洁清晰
         /// </summary>
-        public async Task<(bool Success, string Message)> VehicleEntry(string licensePlateNumber, int parkingSpaceId)
+        public async Task<(bool Success, int ErrorCode, string Message)> VehicleEntry(string licensePlateNumber, int parkingSpaceId)
         {
             try
             {
-                // 1. 检查车位是否已被其他车辆占用
-                var spaceOccupied = await PARK
-                    .Where(p => p.PARKING_SPACE_ID == parkingSpaceId)
-                    .Join(CAR, 
-                          p => new { LicensePlate = p.LICENSE_PLATE_NUMBER, ParkStart = p.PARK_START },
-                          c => new { LicensePlate = c.LICENSE_PLATE_NUMBER, ParkStart = c.PARK_START },
-                          (p, c) => new { Park = p, Car = c })
-                    .Where(pc => !pc.Car.PARK_END.HasValue)
-                    .FirstOrDefaultAsync();
-                    
-                if (spaceOccupied != null)
-                    return (false, $"车位{parkingSpaceId}已被车辆{spaceOccupied.Park.LICENSE_PLATE_NUMBER}占用");
-
-                // 2. 检查车辆是否还在停车场（只有当前还在停车的车辆才不能重复入场）
-                var currentParking = await PARK
-                    .Where(p => p.LICENSE_PLATE_NUMBER == licensePlateNumber)
-                    .Join(CAR, 
-                          p => new { LicensePlate = p.LICENSE_PLATE_NUMBER, ParkStart = p.PARK_START },
-                          c => new { LicensePlate = c.LICENSE_PLATE_NUMBER, ParkStart = c.PARK_START },
-                          (p, c) => new { Park = p, Car = c })
-                    .Where(pc => !pc.Car.PARK_END.HasValue)
-                    .FirstOrDefaultAsync();
-                    
-                if (currentParking != null)
-                    return (false, "该车辆当前还在停车场内，不可重复入场");
-
-                // 3. 使用中国本地时间戳
-                var currentTime = DateTime.Now;
-
-                // 4. 先插入车辆记录
-                var car = new Car
+                // 创建车辆入场请求
+                var request = new VehicleEntryRequest
                 {
-                    LICENSE_PLATE_NUMBER = licensePlateNumber,
-                    PARK_START = currentTime,
-                    PARK_END = null
+                    LicensePlate = licensePlateNumber,
+                    SpaceId = parkingSpaceId,
+                    RequestTime = DateTime.Now
                 };
-                CAR.Add(car);
 
-                // 5. 插入停车记录
-                var park = new Park
-                {
-                    LICENSE_PLATE_NUMBER = licensePlateNumber,
-                    PARKING_SPACE_ID = parkingSpaceId,
-                    PARK_START = currentTime
-                };
-                PARK.Add(park);
+                // 使用责任链构建器构建默认责任链
+                var builder = new EntryHandlerBuilder(this);
+                var handlerChain = builder.BuildDefaultChain();
 
-                // 6. 保存到数据库
-                await SaveChangesAsync();
+                // 从责任链的第一个处理者开始处理
+                // 如果所有校验通过，返回 true；如果任何校验失败，会抛出 VehicleEntryException
+                await handlerChain.HandleAsync(request);
 
-                // 7. 最后更新车位状态（使用原生SQL）
-                await Database.ExecuteSqlRawAsync(
-                    "UPDATE PARKING_SPACE SET OCCUPIED = 1 WHERE PARKING_SPACE_ID = {0}", 
-                    parkingSpaceId);
-
-                // 8. 记录日志
-                Console.WriteLine($"[停车记录创建成功] 车牌号: {licensePlateNumber}, 车位ID: {parkingSpaceId}");
-                Console.WriteLine($"  入场时间: {currentTime:yyyy-MM-dd HH:mm:ss} (中国本地时间)");
-                Console.WriteLine($"  时区信息: {TimeZoneInfo.Local.DisplayName}");
-
-                return (true, "车辆入场成功");
+                return (true, (int)oracle_backend.patterns.Chain_of_Responsibility.VehicleEntryErrorCode.Unknown, "车辆入场成功");
+            }
+            catch (oracle_backend.patterns.Chain_of_Responsibility.VehicleEntryException ex)
+            {
+                // 捕获责任链中的校验异常，返回友好的错误信息和错误码
+                return (false, (int)ex.ErrorCode, ex.Message);
             }
             catch (Exception ex)
             {
-                return (false, $"入场失败: {ex.Message}");
+                // 捕获其他异常（如数据库异常等）
+                return (false, (int)oracle_backend.patterns.Chain_of_Responsibility.VehicleEntryErrorCode.Unknown, $"入场失败: {ex.Message}");
             }
         }
 
