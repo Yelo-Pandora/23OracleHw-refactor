@@ -87,6 +87,7 @@ namespace oracle_backend
             builder.Services.AddScoped<ICollaborationRepository, CollaborationRepository>();
             builder.Services.AddScoped<IStoreRepository, StoreRepository>();
             builder.Services.AddScoped<IVenueEventRepository, VenueEventRepository>();
+            builder.Services.AddScoped<IEquipmentRepository, EquipmentRepository>();
 
             //注册工厂模式
             builder.Services.AddScoped<IAreaComponentFactory, AreaComponentFactory>();
@@ -95,6 +96,8 @@ namespace oracle_backend
             builder.Services.AddScoped<IAccountFactory, AccountFactory>();
             builder.Services.AddScoped<IVenueEventFactory, VenueEventFactory>();
             builder.Services.AddScoped<IStoreFactory, StoreFactory>();
+
+            //
 
 
             // 添加CORS配置
