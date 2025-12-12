@@ -8,6 +8,7 @@ using oracle_backend.patterns.Composite_Pattern.Leaf;
 using oracle_backend.Patterns.Repository.Implementations;
 using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
+using oracle_backend.Patterns.Factory.Interfaces; // 引用工厂接口
 
 namespace oracle_backend.Controllers
 {
@@ -54,6 +55,7 @@ namespace oracle_backend.Controllers
         private readonly IParkingRepository _parkingRepo;
         private readonly IAccountRepository _accountRepo;
         private readonly IAreaRepository _areaRepo;
+        private readonly IAreaComponentFactory _areaFactory; // 注入工厂
         private readonly ILogger<ParkingController> _logger;
 
         public ParkingController(
@@ -61,6 +63,7 @@ namespace oracle_backend.Controllers
             //AccountDbContext accountContext, 
             IParkingRepository parkingRepo,
             IAccountRepository accountRepo,
+            IAreaComponentFactory areaFactory, // 构造注入
             IAreaRepository areaRepo,
             ILogger<ParkingController> logger)
         {
@@ -69,6 +72,7 @@ namespace oracle_backend.Controllers
             _parkingRepo = parkingRepo;
             _accountRepo = accountRepo;
             _areaRepo = areaRepo;
+            _areaFactory = areaFactory;
             _logger = logger;
         }
 
@@ -414,8 +418,8 @@ namespace oracle_backend.Controllers
                         return BadRequest(new { error = "权限不足" });
                 }
 
-                // 2. [Composite] 构建 Leaf
-                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, areaId);
+                // 2. [Composite] [Factory Pattern] 构建 Leaf
+                IAreaComponent component = _areaFactory.CreateParking(areaId);
 
                 // 3. [Composite] 调用接口
                 var details = await component.GetDetailsAsync();
@@ -651,8 +655,8 @@ namespace oracle_backend.Controllers
                         return BadRequest(new { error = "权限不足" });
                 }
 
-                // [Composite] 构建 Leaf
-                IAreaComponent component = new ParkingLeaf(_areaRepo, _parkingRepo, dto.AreaId);
+                // [Composite] [Factory Pattern] 构建 Leaf
+                IAreaComponent component = _areaFactory.CreateParking(dto.AreaId);
 
                 if (!await _parkingRepo.ParkingLotExistsAsync(dto.AreaId))
                     return BadRequest(new { error = "停车场不存在" });
@@ -820,8 +824,8 @@ namespace oracle_backend.Controllers
                 {
                     try
                     {
-                        // [Composite] 构建 Leaf
-                        IAreaComponent leaf = new ParkingLeaf(_areaRepo, _parkingRepo, lot.AREA_ID);
+                        // [Composite] [Factory Pattern] 构建 Leaf
+                        IAreaComponent leaf = _areaFactory.CreateParking(lot.AREA_ID);
 
                         // [Composite] 获取详情
                         var info = await leaf.GetDetailsAsync();
@@ -2146,7 +2150,7 @@ namespace oracle_backend.Controllers
                     if (!await _parkingContext.ParkingLotExists(dto.AreaId.Value))
                         return BadRequest(new { error = "停车场不存在" });
 
-                    component = new ParkingLeaf(_areaRepo, _parkingRepo, dto.AreaId.Value);
+                    component = _areaFactory.CreateParking(dto.AreaId.Value);
                     areaName = $"停车场{dto.AreaId.Value}";
                 }
                 else
@@ -2160,7 +2164,7 @@ namespace oracle_backend.Controllers
                     var container = new AreaContainer("所有停车场容器");
                     foreach (var id in allAreaIds)
                     {
-                        container.Add(new ParkingLeaf(_areaRepo, _parkingRepo, id));
+                        container.Add(_areaFactory.CreateParking(id));
                     }
                     component = container;
                 }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Patterns.Factory.Interfaces;
 using System.ComponentModel.DataAnnotations;
 
 namespace oracle_backend.Controllers
@@ -10,12 +11,17 @@ namespace oracle_backend.Controllers
     public class VenueEventController : ControllerBase
     {
         private readonly IVenueEventRepository _venueRepo;
+        private readonly IVenueEventFactory _venueFactory;
         private readonly ILogger<VenueEventController> _logger;
 
         // 构造函数注入 Repository
-        public VenueEventController(IVenueEventRepository venueRepo, ILogger<VenueEventController> logger)
+        public VenueEventController(
+            IVenueEventRepository venueRepo,
+            IVenueEventFactory venueFactory,
+            ILogger<VenueEventController> logger)
         {
             _venueRepo = venueRepo;
+            _venueFactory = venueFactory;
             _logger = logger;
         }
 
@@ -127,25 +133,17 @@ namespace oracle_backend.Controllers
             // 只要是在同一个 Scope 内，多次 SaveChangesAsync 是安全的。
             try
             {
-                // 创建场地活动记录
-                var venueEvent = new VenueEvent
-                {
-                    EVENT_NAME = dto.EventName,
-                    EVENT_START = dto.RentStartTime,
-                    EVENT_END = dto.RentEndTime,
-                    HEADCOUNT = dto.ExpectedHeadcount,
-                    FEE = dto.ExpectedFee ?? 0,
-                    CAPACITY = dto.Capacity ?? eventArea.CAPACITY ?? 0,
-                    EXPENSE = dto.Expense ?? 0
-                };
+                // [重构] 使用工厂创建聚合对象 (Event + Detail)
+                // 状态 "待审批" 等逻辑被封装在工厂内
+                var result = _venueFactory.CreateReservation(dto, eventArea.CAPACITY ?? 0);
 
-                await _venueRepo.AddAsync(venueEvent);
+                await _venueRepo.AddAsync(result.Event);
                 await _venueRepo.SaveChangesAsync(); // 获取 ID
 
                 // 创建场地活动详情记录
                 var venueEventDetail = new VenueEventDetail
                 {
-                    EVENT_ID = venueEvent.EVENT_ID,
+                    EVENT_ID = result.Event.EVENT_ID,
                     AREA_ID = dto.AreaId,
                     COLLABORATION_ID = dto.CollaborationId,
                     RENT_START = dto.RentStartTime,
@@ -160,7 +158,7 @@ namespace oracle_backend.Controllers
                 return Ok(new
                 {
                     message = "场地预约申请提交成功，等待审批",
-                    eventId = venueEvent.EVENT_ID
+                    eventId = result.Event.EVENT_ID
                 });
             }
             catch (Exception ex)
@@ -261,12 +259,7 @@ namespace oracle_backend.Controllers
                     // 添加新的
                     foreach (var account in dto.ParticipantAccounts)
                     {
-                        var tempAuthority = new TempAuthority
-                        {
-                            ACCOUNT = account,
-                            EVENT_ID = eventId,
-                            TEMP_AUTHORITY = 3
-                        };
+                        var tempAuthority = _venueFactory.CreateTempAuthority(account, eventId, 3);
                         await _venueRepo.AddTempAuthorityAsync(tempAuthority);
                     }
                 }

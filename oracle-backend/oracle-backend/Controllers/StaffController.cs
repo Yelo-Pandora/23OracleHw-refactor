@@ -2,13 +2,15 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
+using oracle_backend.patterns.Composite_Pattern.Component; // 引入组件接口
+using oracle_backend.patterns.Composite_Pattern.Leaf;      // 引入叶子节点
+using oracle_backend.Patterns.Factory.Interfaces;          // 引用工厂接口
 using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Services;
 using System.ComponentModel.DataAnnotations;
 using System.Numerics;
 using System.Threading.Tasks;
-using oracle_backend.patterns.Composite_Pattern.Component; // 引入组件接口
-using oracle_backend.patterns.Composite_Pattern.Leaf;      // 引入叶子节点
+using static oracle_backend.Controllers.AccountController; // 引用 DTO
 
 namespace oracle_backend.Controllers
 {
@@ -22,7 +24,9 @@ namespace oracle_backend.Controllers
 
         private readonly ICollaborationRepository _collabRepo;
         private readonly IAccountRepository _accountRepo;
-        private readonly IVenueEventRepository _eventRepo;
+
+        private readonly IPersonComponentFactory _personFactory;
+        private readonly IAccountFactory _accountFactory;
 
         private readonly ILogger<StaffController> _logger;
         private readonly ILogger<AccountController> _accountLogger;
@@ -33,7 +37,8 @@ namespace oracle_backend.Controllers
             AccountDbContext accountContext,
             ICollaborationRepository collabRepo,
             IAccountRepository accountRepo,
-            IVenueEventRepository eventRepo,
+            IPersonComponentFactory personFactory,
+            IAccountFactory accountFactory,
             ILogger<StaffController> logger,
             ILogger<AccountController> accountLogger)
         {
@@ -42,19 +47,11 @@ namespace oracle_backend.Controllers
             _accountContext = accountContext;
             _collabRepo = collabRepo;
             _accountRepo = accountRepo;
-            _eventRepo = eventRepo;
+            _personFactory = personFactory;
+            _accountFactory = accountFactory;
             _logger = logger;
             _accountLogger = accountLogger;
             _accountRepo = accountRepo;
-        }
-
-        // =========================================================================
-        // 辅助函数，创建 Leaf 节点
-        // 作用：隐藏 Leaf 的创建细节，Controller 只需知道它得到了一个 IPersonComponent
-        // =========================================================================
-        private IPersonComponent CreateStaffComponent(int staffId)
-        {
-            return new StaffLeaf(_collabRepo, _accountRepo, _eventRepo, staffId);
         }
 
         // DTO:
@@ -247,24 +244,19 @@ namespace oracle_backend.Controllers
                     PASSWORD = "DefaultPassword",
                     IDENTITY = "员工"
                 };
-                var accountController = new AccountController(_accountRepo, _accountLogger);
-                var registerResult = await accountController.Register(accountDto) as ObjectResult;
+                bool isFirstUser = await _accountRepo.GetAccountCountAsync() == 0;
+                var newAccount = _accountFactory.CreateAccount(accountDto, isFirstUser);
+
+                await _accountRepo.AddAsync(newAccount);
+                await _accountRepo.SaveChangesAsync();
                 _logger.LogInformation("账号注册完成");
-                if (registerResult == null || registerResult.StatusCode != 200)
-                {
-                    return BadRequest("创建员工账号失败");
-                }
 
                 // 添加员工
                 await _collabRepo.AddStaffAsync(staff);
                 await _collabRepo.SaveChangesAsync();
 
                 // 建立员工与账号关联
-                var staffAccount = new StaffAccount
-                {
-                    STAFF_ID = newStaffId,
-                    ACCOUNT = accountStr
-                };
+                var staffAccount = _accountFactory.CreateStaffLink(accountStr, newStaffId);
                 await _accountRepo.AddStaffAccountLink(staffAccount);
                 await _accountRepo.SaveChangesAsync();
                 _accountLogger.LogInformation($"员工与账号关联: ID={staff.STAFF_ID}, 账号={accountStr}");
@@ -327,20 +319,20 @@ namespace oracle_backend.Controllers
 
         //    return Ok("员工权限修改成功");
         //}
+        // 2.6.2 员工权限管理
         [HttpPatch("ModifyStaffAuthority")]
         public async Task<IActionResult> ModifyStaffAuthority(
             [FromQuery, Required] string operatorAccount,
-            [FromQuery] int staffId,
+            [FromQuery, Required] int staffId,
             [FromQuery] int newAuthority)
         {
-            // 1. 基础检查 (保持 Controller 的 HTTP 适配层职责)
+            // 基础检查
             var staff = await _collabRepo.FindStaffByIdAsync(staffId);
             if (staff == null) return BadRequest("员工不存在");
 
             var Permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
             if (Permission != null) return Permission;
 
-            // 权限大小比较逻辑保留在 Controller，因为这是"操作者"是否有权发起请求的验证
             var currentAuthority = await GetCurrentAuthorityLevel(operatorAccount);
             var staffAccount = await _accountRepo.AccountFromStaffID(staffId);
             var staffAuthority = await GetCurrentAuthorityLevel(staffAccount.ACCOUNT);
@@ -350,25 +342,20 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 2. [Composite 模式介入]
-                // 构建组件
-                IPersonComponent staffComponent = CreateStaffComponent(staffId);
+                // [Factory Pattern] 使用工厂创建组件
+                IPersonComponent staffComponent = _personFactory.CreateStaff(staffId);
 
-                // 构建参数包
                 var config = new AuthorityConfig
                 {
                     PermanentAuthorityLevel = newAuthority
-                    // EventId 为空，表示修改常驻权限
                 };
 
-                // 调用接口 (Leaf 内部会处理临时权限冲突检查和 DB 更新)
                 await staffComponent.ManageAuthorityAsync(config);
 
                 return Ok("员工权限修改成功");
             }
             catch (Exception ex)
             {
-                // 捕获 Leaf 抛出的业务异常 (如"请先收回临时权限")
                 return BadRequest(ex.Message);
             }
         }
@@ -474,7 +461,7 @@ namespace oracle_backend.Controllers
                 }
 
                 // 2. 调用组件
-                IPersonComponent staffComponent = CreateStaffComponent(staffId);
+                IPersonComponent staffComponent = _personFactory.CreateStaff(staffId);
                 await staffComponent.UpdateProfileAsync(config);
 
                 return Ok("修改成功");
@@ -567,7 +554,7 @@ namespace oracle_backend.Controllers
             try
             {
                 // 1. [Composite 模式介入]
-                IPersonComponent staffComponent = CreateStaffComponent(staffId);
+                IPersonComponent staffComponent = _personFactory.CreateStaff(staffId);
 
                 // 2. 构建参数包
                 // 注意：StaffDto 中的 BASE_SALARY 对应 Config.NewBaseSalary
@@ -673,7 +660,7 @@ namespace oracle_backend.Controllers
             try
             {
                 // 1. [Composite 模式介入]
-                IPersonComponent staffComponent = CreateStaffComponent(staff.STAFF_ID);
+                IPersonComponent staffComponent = _personFactory.CreateStaff(staff.STAFF_ID);
 
                 // 2. 构建配置
                 var config = new AuthorityConfig
@@ -741,8 +728,8 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 1. [Composite 模式介入]
-                IPersonComponent staffComponent = CreateStaffComponent(staff.STAFF_ID);
+                // [Factory Pattern] 使用工厂创建组件
+                IPersonComponent staffComponent = _personFactory.CreateStaff(staff.STAFF_ID);
 
                 // 2. 构建配置 (撤销模式)
                 var config = new AuthorityConfig

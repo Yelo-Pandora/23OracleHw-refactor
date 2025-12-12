@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using oracle_backend.Dbcontexts;
+using oracle_backend.Patterns.Factory.Implementations;
+using oracle_backend.Patterns.Factory.Interfaces;
 using oracle_backend.Patterns.Repository;
 using oracle_backend.Patterns.Repository.Implementations;
 using oracle_backend.Patterns.Repository.Interfaces;
@@ -74,6 +76,8 @@ namespace oracle_backend
 
             // 注册服务
             builder.Services.AddScoped<SaleEventService>();
+
+            // 注册仓储模式
             builder.Services.AddScoped<IParkingRepository, ParkingRepository>();
             builder.Services.AddScoped<ISaleEventService, SaleEventService>();
             builder.Services.AddScoped<IAccountRepository, AccountRepository>();
@@ -83,6 +87,15 @@ namespace oracle_backend
             builder.Services.AddScoped<ICollaborationRepository, CollaborationRepository>();
             builder.Services.AddScoped<IStoreRepository, StoreRepository>();
             builder.Services.AddScoped<IVenueEventRepository, VenueEventRepository>();
+
+            //注册工厂模式
+            builder.Services.AddScoped<IAreaComponentFactory, AreaComponentFactory>();
+            builder.Services.AddScoped<IPersonComponentFactory, PersonComponentFactory>();
+            builder.Services.AddScoped<ISaleEventFactory, SaleEventFactory>();
+            builder.Services.AddScoped<IAccountFactory, AccountFactory>();
+            builder.Services.AddScoped<IVenueEventFactory, VenueEventFactory>();
+            builder.Services.AddScoped<IStoreFactory, StoreFactory>();
+
 
             // 添加CORS配置
             builder.Services.AddCors(options =>

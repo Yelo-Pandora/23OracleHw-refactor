@@ -1,5 +1,7 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
+using oracle_backend.Patterns.Factory.Implementations;
+using oracle_backend.Patterns.Factory.Interfaces;
 using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
 
@@ -11,11 +13,16 @@ namespace oracle_backend.Controllers
     {
         // 只注入 IAccountRepository，保持与原 AccountDbContext 的一一对应关系
         private readonly IAccountRepository _accountRepo;
+        private readonly IAccountFactory _accountFactory;
         private readonly ILogger<AccountController> _logger;
 
-        public AccountController(IAccountRepository accountRepo, ILogger<AccountController> logger)
+        public AccountController(
+            IAccountRepository accountRepo,
+            ILogger<AccountController> logger,
+            IAccountFactory accountFactory)
         {
             _accountRepo = accountRepo;
+            _accountFactory = accountFactory;
             _logger = logger;
         }
 
@@ -64,59 +71,32 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 使用 Repository 检查是否存在
                 var existingAccount = await _accountRepo.FindAccountByUsername(registerDto.ACCOUNT);
+                if (existingAccount != null) return Conflict("该账号已存在。");
 
-                if (existingAccount != null)
-                {
-                    _logger.LogWarning("账号 {AccountName} 已存在，注册失败。", registerDto.ACCOUNT);
-                    return Conflict("该账号已存在。");
-                }
-
-                int authorityCode;
-                string identityValue = registerDto.IDENTITY;
-
-                // 使用 Repository 获取总数
+                // 获取业务状态，传给工厂
                 bool isFirstUser = await _accountRepo.GetAccountCountAsync() == 0;
 
-                if (isFirstUser)
+                try
                 {
-                    _logger.LogInformation("数据库中无用户，将 {AccountName} 设置为第一个管理员。", registerDto.ACCOUNT);
-                    authorityCode = 1;
-                    identityValue = "员工";
+                    // [重构] 使用工厂创建对象，Controller 不再关心权限代码是多少
+                    var account = _accountFactory.CreateAccount(registerDto, isFirstUser);
+
+                    await _accountRepo.AddAsync(account);
+                    await _accountRepo.SaveChangesAsync();
+
+                    _logger.LogInformation("账号 {AccountName} 注册成功。", account.ACCOUNT);
+                    return Ok(new { message = "账号注册成功。" });
                 }
-                else
+                catch (ArgumentException ex) // 捕获工厂抛出的身份验证异常
                 {
-                    switch (registerDto.IDENTITY)
-                    {
-                        case "员工": authorityCode = 3; break;
-                        case "商户": authorityCode = 4; break;
-                        default:
-                            _logger.LogWarning("无效的身份类型 '{Identity}'，注册失败。", registerDto.IDENTITY);
-                            return BadRequest($"无效的身份类型：'{registerDto.IDENTITY}'。有效值为：员工, 商户。");
-                    }
+                    return BadRequest(ex.Message);
                 }
-
-                var account = new Account
-                {
-                    ACCOUNT = registerDto.ACCOUNT,
-                    USERNAME = registerDto.USERNAME,
-                    PASSWORD = registerDto.PASSWORD,
-                    IDENTITY = identityValue,
-                    AUTHORITY = authorityCode
-                };
-
-                // 使用 Repository 添加并保存
-                await _accountRepo.AddAsync(account);
-                await _accountRepo.SaveChangesAsync();
-
-                _logger.LogInformation("账号 {AccountName} 注册成功。", account.ACCOUNT);
-                return Ok(new { message = "账号注册成功。" });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "为账号 {AccountName} 进行注册时发生内部错误。", registerDto.ACCOUNT);
-                return StatusCode(500, "服务器内部错误，注册失败。");
+                _logger.LogError(ex, "注册失败");
+                return StatusCode(500, "服务器内部错误");
             }
         }
 
@@ -395,15 +375,6 @@ namespace oracle_backend.Controllers
                 Authority = accountEntity.AUTHORITY
             };
 
-            // 手动获取关联信息，这里利用 CheckStaff/CheckStore 
-            // 注意：如果 CheckStaff 返回的对象没有 Navigation，你需要确保 AccountRepo 的 CheckStaff 有 Include
-            // 如果 AccountRepo.CheckStaff 只是调用 Context.CheckStaff (没有Include)，
-            // 你可能需要在 Repo 里加一个 CheckStaffWithInfo，或者在这里接受只能拿到 ID
-
-            // 为了简化，假设我们已经在 Repo 中处理了 Include，或者我们接受暂时只拿 ID
-            // 根据上面的 AccountDbContext 代码，CheckStaff 返回的是 FirstOrDefaultAsync，通常不带 Include。
-            // 但我们在 AccountRepository 中可以轻松在 CheckStaff 实现里加上 Include，或者使用 GetStaffByIdAsync
-
             var staffLink = await _accountRepo.CheckStaff(accountId);
             if (staffLink != null)
             {
@@ -474,7 +445,7 @@ namespace oracle_backend.Controllers
                     var existingStaffIdLink = await _accountRepo.AccountFromStaffID(bindDto.ID);
                     if (existingStaffIdLink != null) return Conflict("该员工已经绑定了一个账号。");
 
-                    var staffAccount = new StaffAccount { ACCOUNT = bindDto.ACCOUNT, STAFF_ID = bindDto.ID };
+                    var staffAccount = _accountFactory.CreateStaffLink(bindDto.ACCOUNT, bindDto.ID);
                     await _accountRepo.AddStaffAccountLink(staffAccount);
                     await _accountRepo.SaveChangesAsync();
                     return Ok("绑定成功");
@@ -491,7 +462,7 @@ namespace oracle_backend.Controllers
                         var existingStoreIdLink = await _accountRepo.AccountFromStoreID(bindDto.ID);
                         if (existingStoreIdLink != null) return Conflict("该商铺已经绑定了一个账号。");
 
-                        var storeAccount = new StoreAccount { ACCOUNT = bindDto.ACCOUNT, STORE_ID = bindDto.ID };
+                   var storeAccount = _accountFactory.CreateStoreLink(bindDto.ACCOUNT, bindDto.ID);
                         await _accountRepo.AddStoreAccountLink(storeAccount);
                         await _accountRepo.SaveChangesAsync();
                         return Ok("绑定成功");

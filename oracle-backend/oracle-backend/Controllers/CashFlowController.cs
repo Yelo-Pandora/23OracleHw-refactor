@@ -1,25 +1,26 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using oracle_backend.Dbcontexts;
-using oracle_backend.Models;
-using oracle_backend.Services;
-using System.Data;
-using System.Globalization;
-using OfficeOpenXml;
-using OfficeOpenXml.Style;
+﻿using iText.IO.Font;
 using iText.Kernel.Font;
-using iText.IO.Font;
 using iText.Layout.Element;
 using iText.Layout.Properties;
-using System.Text;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using static oracle_backend.Models.CashFlowDto;
-using System.ComponentModel;
+using OfficeOpenXml;
+using OfficeOpenXml.Style;
 using Oracle.ManagedDataAccess.Client;
+using oracle_backend.Dbcontexts;
+using oracle_backend.Models;
 using oracle_backend.patterns.Composite_Pattern.Component;
 using oracle_backend.patterns.Composite_Pattern.Container;
 using oracle_backend.patterns.Composite_Pattern.Leaf;
+using oracle_backend.Patterns.Factory.Interfaces;
 using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Services;
+using System.ComponentModel;
+using System.Data;
+using System.Globalization;
+using System.Text;
+using static oracle_backend.Models.CashFlowDto;
 
 namespace oracle_backend.Controllers
 {
@@ -40,9 +41,7 @@ namespace oracle_backend.Controllers
 
         // [新增] Repository 引用，用于构建 Composite 树
         private readonly IAreaRepository _areaRepository;
-        private readonly IStoreRepository _storeRepository;
-        private readonly IParkingRepository _parkingRepository;
-        private readonly IVenueEventRepository _venueEventRepository;
+        private readonly IAreaComponentFactory _areaFactory;
         public CashFlowController(
             CashFlowDbContext context,
             ILogger<CashFlowController> logger,
@@ -54,9 +53,7 @@ namespace oracle_backend.Controllers
             ParkingContext parkingContext,
             ComplexDbContext complexContext,
             IAreaRepository areaRepository,
-            IStoreRepository storeRepository,
-            IParkingRepository parkingRepository,
-            IVenueEventRepository venueEventRepository)
+            IAreaComponentFactory areaFactory)
         {
             _context = context;
             _logger = logger;
@@ -68,47 +65,44 @@ namespace oracle_backend.Controllers
             _parkingContext = parkingContext;
             _complexContext = complexContext;
             _areaRepository = areaRepository;
-            _storeRepository = storeRepository;
-            _parkingRepository = parkingRepository;
-            _venueEventRepository = venueEventRepository;
+            _areaFactory = areaFactory;
         }
 
-        // [新增] 构建整个商场组合树
+        // [重构] 构建整个商场组合树
         private async Task<IAreaComponent> BuildWholeMallCompositeAsync()
         {
             var mallRoot = new AreaContainer("整个商场组合树的根节点");
 
             // 1. 添加商铺节点 (Retail Leafs)
-            // 使用 AreaRepository 获取对应类型的区域列表
             var retailAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("RETAIL", null);
             foreach (var area in retailAreas)
             {
-                // [修复] 传入 AreaRepo + StoreRepo
-                mallRoot.Add(new RetailLeaf(_areaRepository, _storeRepository, area.AREA_ID));
+                // [Factory] 使用工厂创建
+                mallRoot.Add(_areaFactory.CreateRetail(area.AREA_ID));
             }
 
             // 2. 添加停车场节点 (Parking Leafs)
             var parkingAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("PARKING", null);
             foreach (var area in parkingAreas)
             {
-                // [修复] 传入 AreaRepo + ParkingRepo
-                mallRoot.Add(new ParkingLeaf(_areaRepository, _parkingRepository, area.AREA_ID));
+                // [Factory] 使用工厂创建
+                mallRoot.Add(_areaFactory.CreateParking(area.AREA_ID));
             }
 
             // 3. 添加活动场地节点 (Event Leafs)
             var eventAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("EVENT", null);
             foreach (var area in eventAreas)
             {
-                // [修复] 传入 AreaRepo
-                mallRoot.Add(new EventLeaf(_areaRepository, _venueEventRepository, area.AREA_ID));
+                // [Factory] 使用工厂创建
+                mallRoot.Add(_areaFactory.CreateEvent(area.AREA_ID));
             }
 
             // 4. 添加其他区域 (Other Leafs)
             var otherAreas = await _areaRepository.GetAreasByCategoryAndStatusAsync("OTHER", null);
             foreach (var area in otherAreas)
             {
-                // [修复] 传入 AreaRepo
-                mallRoot.Add(new OtherLeaf(_areaRepository, area.AREA_ID));
+                // [Factory] 使用工厂创建
+                mallRoot.Add(_areaFactory.CreateOther(area.AREA_ID));
             }
 
             return mallRoot;
