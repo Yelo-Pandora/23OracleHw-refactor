@@ -243,7 +243,7 @@ namespace oracle_backend.Controllers
                 // [State Pattern] 如果是Retail区域且要更新租赁状态,使用状态模式验证
                 if (area.CATEGORY.ToUpper() == "RETAIL" && !string.IsNullOrEmpty(dto.RentStatus))
                 {
-                    var retailArea = await _areaRepository.GetRetailAreaAsync(id);
+                    var retailArea = await _areaRepository.GetRetailAreaDetailAsync(id);
                     if (retailArea != null && dto.RentStatus != retailArea.RENT_STATUS)
                     {
                         var stateContext = CreateRetailAreaStateContext(retailArea);

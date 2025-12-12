@@ -97,27 +97,35 @@ namespace oracle_backend.Patterns.Repository.Implementations
         // === 子类型更新/插入 (CRUD 核心) ===
         public async Task UpsertRetailAreaAsync(int areaId, string status, double baseRent)
         {
-            var exists = await _complexContext.RetailAreas.AnyAsync(r => r.AREA_ID == areaId);
-            if (!exists)
+            var localEntity = _complexContext.RetailAreas.Local
+            .FirstOrDefault(r => r.AREA_ID == areaId);
+
+            if (localEntity != null)
+            {
+                _complexContext.Entry(localEntity).State = EntityState.Detached;
+            }
+
+            var count = await _complexContext.RetailAreas
+                .AsNoTracking()  // 添加 AsNoTracking
+                .CountAsync(r => r.AREA_ID == areaId);
+            if (count == 0)
             {
                 await _complexContext.Database.ExecuteSqlInterpolatedAsync(
                     $"INSERT INTO RETAIL_AREA (AREA_ID, RENT_STATUS, BASE_RENT) VALUES ({areaId}, {status}, {baseRent})");
             }
             else
             {
-                // 使用 Attach + Property 修改，避免查询实体
-                var entity = new RetailArea { AREA_ID = areaId, RENT_STATUS = status, BASE_RENT = baseRent };
-                _complexContext.RetailAreas.Attach(entity);
-                _complexContext.Entry(entity).Property(x => x.RENT_STATUS).IsModified = true;
-                _complexContext.Entry(entity).Property(x => x.BASE_RENT).IsModified = true;
-                await _complexContext.SaveChangesAsync();
+                await _complexContext.Database.ExecuteSqlInterpolatedAsync(
+                    $"UPDATE RETAIL_AREA SET RENT_STATUS = {status}, BASE_RENT = {baseRent} WHERE AREA_ID = {areaId}");
             }
         }
 
         public async Task UpsertEventAreaAsync(int areaId, int capacity, double areaFee)
         {
-            var exists = await _complexContext.EventAreas.AnyAsync(e => e.AREA_ID == areaId);
-            if (!exists)
+            var count = await _complexContext.EventAreas
+            .AsNoTracking()  // 添加 AsNoTracking
+            .CountAsync(e => e.AREA_ID == areaId);
+            if (count == 0)
             {
                 await _complexContext.Database.ExecuteSqlInterpolatedAsync(
                     $"INSERT INTO EVENT_AREA (AREA_ID, CAPACITY, AREA_FEE) VALUES ({areaId}, {capacity}, {areaFee})");
@@ -134,8 +142,10 @@ namespace oracle_backend.Patterns.Repository.Implementations
 
         public async Task UpsertParkingLotAsync(int areaId, string status, double parkingFee)
         {
-            var exists = await _complexContext.ParkingLots.AnyAsync(p => p.AREA_ID == areaId);
-            if (!exists)
+            var count = await _complexContext.ParkingLots
+                .AsNoTracking()  // 添加 AsNoTracking
+                .CountAsync(p => p.AREA_ID == areaId);
+            if (count == 0)
             {
                 await _complexContext.Database.ExecuteSqlInterpolatedAsync(
                     $"INSERT INTO PARKING_LOT (AREA_ID, PARKING_FEE) VALUES ({areaId}, {parkingFee})");
@@ -151,8 +161,10 @@ namespace oracle_backend.Patterns.Repository.Implementations
 
         public async Task UpsertOtherAreaAsync(int areaId, string type)
         {
-            var exists = await _complexContext.OtherAreas.AnyAsync(o => o.AREA_ID == areaId);
-            if (!exists)
+            var count = await _complexContext.OtherAreas
+                .AsNoTracking()  // 添加 AsNoTracking
+                .CountAsync(o => o.AREA_ID == areaId);
+            if (count == 0)
             {
                 await _complexContext.Database.ExecuteSqlInterpolatedAsync(
                     $"INSERT INTO OTHER_AREA (AREA_ID, TYPE) VALUES ({areaId}, {type})");
