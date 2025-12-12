@@ -51,25 +51,9 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
             return this;
         }
 
-        /// <summary>
-        /// 添加黑名单校验处理者
-        /// </summary>
-        /// <returns>构建器实例，支持链式调用</returns>
-        public EntryHandlerBuilder AddBlacklistHandler()
-        {
-            AddHandler(new BlacklistHandler(_context));
-            return this;
-        }
 
-        /// <summary>
-        /// 添加余额校验处理者
-        /// </summary>
-        /// <returns>构建器实例，支持链式调用</returns>
-        public EntryHandlerBuilder AddBalanceHandler()
-        {
-            AddHandler(new BalanceHandler(_context));
-            return this;
-        }
+
+
 
         /// <summary>
         /// 添加车辆入场执行处理者
@@ -94,7 +78,7 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
 
         /// <summary>
         /// 构建默认责任链
-        /// 默认顺序：车位存在性校验 -> 重复车辆校验 -> 车位状态校验 -> 黑名单校验 -> 余额校验 -> 执行入场
+        /// 默认顺序：车位存在性校验 -> 重复车辆校验 -> 车位状态校验 -> 执行入场
         /// </summary>
         /// <returns>责任链的第一个处理者</returns>
         public EntryHandler BuildDefaultChain()
@@ -102,8 +86,6 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
             return AddSpaceExistenceHandler()
                 .AddDuplicateVehicleHandler()
                 .AddSpaceStatusHandler()
-                .AddBlacklistHandler()
-                .AddBalanceHandler()
                 .AddVehicleEntryExecutor()
                 .Build();
         }
@@ -146,7 +128,7 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
             // 特殊情况：要移除的是头处理者
             if (_headHandler is T)
             {
-                _headHandler = _headHandler._nextHandler;
+                _headHandler = _headHandler.NextHandler;
                 if (_headHandler == null) // 如果移除后没有处理者了
                     _tailHandler = null;
                 return this;
@@ -154,18 +136,19 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
 
             // 一般情况：查找要移除的处理者的前一个处理者
             EntryHandler current = _headHandler;
-            while (current._nextHandler != null)
+            while (current.NextHandler != null)
             {
-                if (current._nextHandler is T)
+                if (current.NextHandler is T)
                 {
                     // 移除处理者
-                    current._nextHandler = current._nextHandler._nextHandler;
+                    // 这里需要修改EntryHandler类，添加SetNextHandler方法
+                    current.SetNext(current.NextHandler.NextHandler);
                     // 如果移除的是尾处理者，更新尾处理者
-                    if (current._nextHandler == null)
+                    if (current.NextHandler == null)
                         _tailHandler = current;
                     break;
                 }
-                current = current._nextHandler;
+                current = current.NextHandler;
             }
 
             return this;
@@ -196,16 +179,16 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
 
             // 一般情况：查找目标处理者的前一个处理者
             EntryHandler current = _headHandler;
-            while (current._nextHandler != null)
+            while (current.NextHandler != null)
             {
-                if (current._nextHandler is T)
+                if (current.NextHandler is T)
                 {
                     // 插入处理者
-                    handler.SetNext(current._nextHandler);
+                    handler.SetNext(current.NextHandler);
                     current.SetNext(handler);
                     break;
                 }
-                current = current._nextHandler;
+                current = current.NextHandler;
             }
 
             return this;
@@ -222,7 +205,7 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
             while (current != null)
             {
                 handlers.Add(current);
-                current = current._nextHandler;
+                current = current.NextHandler;
             }
             return handlers;
         }
@@ -241,26 +224,26 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
             // 特殊情况：要替换的是头处理者
             if (_headHandler is T)
             {
-                newHandler.SetNext(_headHandler._nextHandler);
+                newHandler.SetNext(_headHandler.NextHandler);
                 _headHandler = newHandler;
                 return this;
             }
 
             // 一般情况：查找要替换的处理者
             EntryHandler current = _headHandler;
-            while (current._nextHandler != null)
+            while (current.NextHandler != null)
             {
-                if (current._nextHandler is T)
+                if (current.NextHandler is T)
                 {
                     // 替换处理者
-                    newHandler.SetNext(current._nextHandler._nextHandler);
+                    newHandler.SetNext(current.NextHandler.NextHandler);
                     current.SetNext(newHandler);
                     // 如果替换的是尾处理者，更新尾处理者
-                    if (newHandler._nextHandler == null)
+                    if (newHandler.NextHandler == null)
                         _tailHandler = newHandler;
                     break;
                 }
-                current = current._nextHandler;
+                current = current.NextHandler;
             }
 
             return this;

@@ -22,14 +22,7 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
         /// 车位已被占用
         /// </summary>
         ParkingSpaceOccupied = 1003,
-        /// <summary>
-        /// 车辆在黑名单中
-        /// </summary>
-        VehicleBlacklisted = 1004,
-        /// <summary>
-        /// 用户余额不足
-        /// </summary>
-        InsufficientBalance = 1005
+
     }
 
     /// <summary>
@@ -65,4 +58,5 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
         }
     }
 }
+
 

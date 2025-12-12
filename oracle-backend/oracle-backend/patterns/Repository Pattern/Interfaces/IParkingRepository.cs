@@ -25,9 +25,7 @@ namespace oracle_backend.Patterns.Repository.Interfaces
         Task<(bool Success, int ErrorCode, string Message)> VehicleEntryAsync(string licensePlate, int spaceId);
         Task<VehicleExitResult?> VehicleExitAsync(string licensePlate);
         
-        // 责任链处理者所需方法
-        Task<bool> IsVehicleBlacklistedAsync(string licensePlate);
-        Task<bool> HasSufficientBalanceAsync(string licensePlate);
+
 
         Task<List<VehicleStatusResult>> GetCurrentVehiclesAsync(int? areaId = null);
         Task<VehicleStatusResult?> GetVehicleStatusByLicensePlateAsync(string licensePlate);

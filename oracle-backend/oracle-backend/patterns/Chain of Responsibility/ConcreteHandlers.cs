@@ -116,67 +116,9 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
         }
     }
 
-    /// <summary>
-    /// 4. 黑名单校验处理者
-    /// 检查车辆是否在黑名单中
-    /// 优化：使用异常处理，简化返回值
-    /// </summary>
-    public class BlacklistHandler : EntryHandler
-    {
-        private readonly ParkingContext _context;
 
-        public BlacklistHandler(ParkingContext context)
-        {
-            _context = context;
-        }
 
-        public override async Task<bool> HandleAsync(VehicleEntryRequest request)
-        {
-            // 检查车辆是否在黑名单中
-            var isBlacklisted = await _context.BLACKLIST
-                .AnyAsync(b => b.LICENSE_PLATE_NUMBER == request.LicensePlate && b.STATUS == "ACTIVE");
 
-            if (isBlacklisted)
-            {
-                throw new VehicleEntryException(VehicleEntryErrorCode.VehicleBlacklisted, $"车辆 {request.LicensePlate} 已被列入黑名单");
-            }
-
-            // 校验通过，传递给下一个处理者
-            return await base.HandleAsync(request);
-        }
-    }
-
-    /// <summary>
-    /// 5. 余额校验处理者
-    /// 检查用户余额是否充足（模拟实现）
-    /// 优化：使用异常处理，简化返回值
-    /// </summary>
-    public class BalanceHandler : EntryHandler
-    {
-        private readonly ParkingContext _context;
-
-        public BalanceHandler(ParkingContext context)
-        {
-            _context = context;
-        }
-
-        public override async Task<bool> HandleAsync(VehicleEntryRequest request)
-        {
-            // 检查车辆用户的余额是否充足
-            // 这里假设我们有一个 USER_BALANCE 表或类似的结构
-            // 为了演示，我们只检查是否存在该用户的余额记录且余额大于0
-            var hasSufficientBalance = await _context.USER_BALANCE
-                .AnyAsync(ub => ub.LICENSE_PLATE_NUMBER == request.LicensePlate && ub.BALANCE >= 10);
-
-            if (!hasSufficientBalance)
-            {
-                throw new VehicleEntryException(VehicleEntryErrorCode.InsufficientBalance, $"车辆 {request.LicensePlate} 的用户余额不足");
-            }
-
-            // 校验通过，传递给下一个处理者
-            return await base.HandleAsync(request);
-        }
-    }
 
     /// <summary>
     /// 6. 最终处理者 - 执行实际的入场操作
