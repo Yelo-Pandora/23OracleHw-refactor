@@ -1081,10 +1081,10 @@ namespace oracle_backend.Controllers
                 }
 
                 // 调用重写的VehicleEntry方法
-                var (success, message) = await _parkingRepo.VehicleEntryAsync(dto.LicensePlateNumber, dto.ParkingSpaceId);
+                var (success, errorCode, message) = await _parkingRepo.VehicleEntryAsync(dto.LicensePlateNumber, dto.ParkingSpaceId);
                 if (!success)
                 {
-                    return BadRequest(new { error = message });
+                    return BadRequest(new { error = message, errorCode = errorCode });
                 }
 
                 // 读取刚刚写入的起始时间

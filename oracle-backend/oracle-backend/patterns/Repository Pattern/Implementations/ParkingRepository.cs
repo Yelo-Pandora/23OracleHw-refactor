@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
@@ -70,7 +70,7 @@ namespace oracle_backend.Patterns.Repository.Implementations
         }
 
         // 车辆管理 (核心业务逻辑)
-        public async Task<(bool Success, string Message)> VehicleEntryAsync(string licensePlate, int spaceId)
+        public async Task<(bool Success, int ErrorCode, string Message)> VehicleEntryAsync(string licensePlate, int spaceId)
         {
             return await _parkingContext.VehicleEntry(licensePlate, spaceId);
         }
@@ -83,6 +83,21 @@ namespace oracle_backend.Patterns.Repository.Implementations
         public async Task<List<VehicleStatusResult>> GetCurrentVehiclesAsync(int? areaId = null)
         {
             return await _parkingContext.GetCurrentVehicles(areaId);
+        }
+
+        // 责任链处理者所需方法实现
+        public async Task<bool> IsVehicleBlacklistedAsync(string licensePlate)
+        {
+            // 检查车辆是否在黑名单中
+            return await _parkingContext.BLACKLIST
+                .AnyAsync(b => b.LICENSE_PLATE_NUMBER == licensePlate && b.STATUS == "ACTIVE");
+        }
+
+        public async Task<bool> HasSufficientBalanceAsync(string licensePlate)
+        {
+            // 检查车辆用户的余额是否充足（至少10元）
+            return await _parkingContext.USER_BALANCE
+                .AnyAsync(ub => ub.LICENSE_PLATE_NUMBER == licensePlate && ub.BALANCE >= 10);
         }
 
         public async Task<VehicleStatusResult?> GetVehicleStatusByLicensePlateAsync(string licensePlate)
