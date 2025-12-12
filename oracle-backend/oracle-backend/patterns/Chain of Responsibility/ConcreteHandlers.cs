@@ -54,11 +54,11 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
         public override async Task<bool> HandleAsync(VehicleEntryRequest request)
         {
             // 检查车辆是否还在停车场内（只有当前还在停车的车辆才不能重复入场）
-            var activeCars = await _context.CAR
-                .Where(c => c.LICENSE_PLATE_NUMBER == request.LicensePlate && !c.PARK_END.HasValue)
-                .AnyAsync();
+            var activeCar = await _context.CAR
+                            .Where(c => c.LICENSE_PLATE_NUMBER == request.LicensePlate && !c.PARK_END.HasValue)
+                            .FirstOrDefaultAsync();
 
-            if (activeCars)
+            if (activeCar != null)
             {
                 throw new VehicleEntryException(VehicleEntryErrorCode.VehicleAlreadyInside, "该车辆当前还在停车场内，不可重复入场");
             }

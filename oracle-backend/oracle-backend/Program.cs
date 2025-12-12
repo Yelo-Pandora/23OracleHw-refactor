@@ -10,6 +10,9 @@ using oracle_backend.Patterns.Repository;
 using oracle_backend.Patterns.Repository.Implementations;
 using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Services;
+// [新增] 外观模式的命名空间
+using oracle_backend.patterns.Facade_Pattern.Interfaces;
+using oracle_backend.patterns.Facade_Pattern.Implementations;
 
 
 namespace oracle_backend
@@ -97,7 +100,11 @@ namespace oracle_backend
             builder.Services.AddScoped<IVenueEventFactory, VenueEventFactory>();
             builder.Services.AddScoped<IStoreFactory, StoreFactory>();
 
-            //
+            //注册外观模式
+            builder.Services.AddScoped<IParkingSystemFacade, ParkingSystemFacade>();
+            builder.Services.AddScoped<IStoreSystemFacade, StoreSystemFacade>();
+            builder.Services.AddScoped<IEquipmentSystemFacade, EquipmentSystemFacade>();
+            builder.Services.AddScoped<IVenueEventSystemFacade, VenueEventSystemFacade>();
 
 
             // 添加CORS配置

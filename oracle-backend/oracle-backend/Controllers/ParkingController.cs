@@ -9,6 +9,7 @@ using oracle_backend.Patterns.Repository.Implementations;
 using oracle_backend.Patterns.Repository.Interfaces;
 using System.ComponentModel.DataAnnotations;
 using oracle_backend.Patterns.Factory.Interfaces; // 引用工厂接口
+using oracle_backend.patterns.Facade_Pattern.Interfaces; // 引用外观接口
 
 namespace oracle_backend.Controllers
 {
@@ -57,6 +58,8 @@ namespace oracle_backend.Controllers
         private readonly IAreaRepository _areaRepo;
         private readonly IAreaComponentFactory _areaFactory; // 注入工厂
         private readonly ILogger<ParkingController> _logger;
+        // [新增] 外观接口
+        private readonly IParkingSystemFacade _parkingFacade;
 
         public ParkingController(
             ParkingContext parkingContext,
@@ -65,7 +68,9 @@ namespace oracle_backend.Controllers
             IAccountRepository accountRepo,
             IAreaComponentFactory areaFactory, // 构造注入
             IAreaRepository areaRepo,
-            ILogger<ParkingController> logger)
+            ILogger<ParkingController> logger,
+            // [新增] 注入外观接口
+            IParkingSystemFacade parkingFacade)
         {
             _parkingContext = parkingContext;
             //_accountContext = accountContext;
@@ -74,6 +79,8 @@ namespace oracle_backend.Controllers
             _areaRepo = areaRepo;
             _areaFactory = areaFactory;
             _logger = logger;
+            // [新增] 赋值
+            _parkingFacade = parkingFacade;
         }
 
         /// <summary>
@@ -1073,38 +1080,21 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 权限校验：管理员
-                var hasPermission = await _accountRepo.CheckAuthority(dto.OperatorAccount, 1);
-                if (!hasPermission)
-                {
-                    return BadRequest(new { error = "权限不足，需要管理员权限" });
-                }
+                // [重构] 使用外观模式替代原有的权限检查、责任链调用和数据查询逻辑
+                var result = await _parkingFacade.VehicleEntryAsync(dto.LicensePlateNumber, dto.ParkingSpaceId, dto.OperatorAccount);
 
-                // 调用重写的VehicleEntry方法
-                var (success, errorCode, message) = await _parkingRepo.VehicleEntryAsync(dto.LicensePlateNumber, dto.ParkingSpaceId);
-                if (!success)
+                if (!result.Success)
                 {
-                    return BadRequest(new { error = message, errorCode = errorCode });
+                    return BadRequest(new { error = result.Message, details = result.Data });
                 }
-
-                // 读取刚刚写入的起始时间
-                var record = await _parkingContext.PARK
-                    .Where(p => p.LICENSE_PLATE_NUMBER == dto.LicensePlateNumber)
-                    .OrderByDescending(p => p.PARK_START)
-                    .FirstOrDefaultAsync();
 
                 return Ok(new ApiResponseDto<object>
                 {
                     Success = true,
-                    Data = new
-                    {
-                        LicensePlateNumber = dto.LicensePlateNumber,
-                        ParkingSpaceId = dto.ParkingSpaceId,
-                        ParkStart = record?.PARK_START ?? DateTime.Now
-                    },
+                    Data = result.Data,
                     Timestamp = DateTime.Now,
                     Total = 1,
-                    Message = "车辆入场成功"
+                    Message = result.Message
                 });
             }
             catch (Exception ex)
@@ -1130,25 +1120,25 @@ namespace oracle_backend.Controllers
 
             try
             {
-                var hasPermission = await _accountRepo.CheckAuthority(dto.OperatorAccount, 1);
-                if (!hasPermission)
+                // [重构] 使用外观模式替代原有的权限检查和Repository调用
+                var result = await _parkingFacade.VehicleExitAsync(dto.LicensePlateNumber, dto.OperatorAccount);
+
+                if (!result.Success)
                 {
-                    return BadRequest(new { error = "权限不足，需要管理员权限" });
+                    if (result.Message.Contains("未找到"))
+                    {
+                        return NotFound(new { error = result.Message });
+                    }
+                    return BadRequest(new { error = result.Message });
                 }
 
-                var result = await _parkingRepo.VehicleExitAsync(dto.LicensePlateNumber);
-                if (result == null)
-                {
-                    return NotFound(new { error = "未找到车辆当日停车记录" });
-                }
-
-                return Ok(new ApiResponseDto<VehicleExitResult>
+                return Ok(new ApiResponseDto<object>
                 {
                     Success = true,
-                    Data = result,
+                    Data = result.Data,
                     Timestamp = DateTime.Now,
                     Total = 1,
-                    Message = "已计算停车费用"
+                    Message = result.Message
                 });
             }
             catch (Exception ex)

@@ -7,6 +7,7 @@ using oracle_backend.Patterns.State.Store;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Cryptography;
 using System.Text;
+using oracle_backend.patterns.Facade_Pattern.Interfaces; // 引入外观模式接口
 
 namespace oracle_backend.Controllers
 {
@@ -21,19 +22,25 @@ namespace oracle_backend.Controllers
         // 保留 Context 用于尚未迁移的复杂业务逻辑
         private readonly StoreDbContext _legacyContext;
         private readonly ILogger<StoreController> _logger;
+        // [新增] 外观接口
+        private readonly IStoreSystemFacade _storeFacade;
 
         public StoreController(
             IStoreRepository storeRepo,
             IAccountRepository accountRepo,
             IStoreFactory storeFactory,
             StoreDbContext legacyContext,
-            ILogger<StoreController> logger)
+            ILogger<StoreController> logger,
+            // [新增] 注入参数
+            IStoreSystemFacade storeFacade)
         {
             _storeRepo = storeRepo;
             _accountRepo = accountRepo;
             _storeFactory = storeFactory;
             _legacyContext = legacyContext;
             _logger = logger;
+            // [新增] 赋值
+            _storeFacade = storeFacade;
         }
 
         /// <summary>
@@ -213,28 +220,29 @@ namespace oracle_backend.Controllers
         [HttpPatch("UpdateStoreStatus/{storeId}")]
         public async Task<IActionResult> UpdateStoreStatus(int storeId, [FromQuery] string newStatus, [FromQuery] string? operatorAccount = null)
         {
-            if (!string.IsNullOrEmpty(operatorAccount))
-            {
-                if (!await _accountRepo.CheckAuthority(operatorAccount, 2))
-                    return BadRequest(new { error = "权限不足" });
-            }
-
-            var store = await _storeRepo.GetByIdAsync(storeId);
-            if (store == null) return NotFound();
-
-            // 使用状态模式验证状态转换
-            var stateContext = CreateStoreStateContext(store);
-            
             try
             {
-                stateContext.TransitionToState(newStatus, "管理员更新状态");
-                store.STORE_STATUS = stateContext.CurrentStateName;
-                await _storeRepo.SaveChangesAsync();
+                // [重构] 使用外观模式替代原有的权限检查、状态上下文创建和转换逻辑
+                await _storeFacade.UpdateStoreStatusAsync(storeId, newStatus, operatorAccount ?? "");
                 return Ok(new { message = "更新成功" });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return BadRequest(new { error = "权限不足" });
+            }
+            catch (KeyNotFoundException)
+            {
+                return NotFound();
             }
             catch (InvalidOperationException ex)
             {
+                // 捕获状态转换失败的异常
                 return BadRequest(new { error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "更新店铺状态失败");
+                return StatusCode(500, new { error = "服务器内部错误" });
             }
         }
 
@@ -336,37 +344,14 @@ namespace oracle_backend.Controllers
         [HttpPost("StatusChangeRequest")]
         public async Task<IActionResult> SubmitStatusChangeRequest([FromBody] StoreStatusChangeRequestDto dto)
         {
-            var store = await _storeRepo.GetByIdAsync(dto.StoreId);
-            if (store == null) return BadRequest("店面不存在");
-
-            // 使用状态模式验证是否可以申请状态变更
-            var stateContext = CreateStoreStateContext(store);
-            
-            if (!stateContext.CanRequestStatusChange(dto.TargetStatus))
-            {
-                return BadRequest(new { error = $"不能从 {stateContext.CurrentStateName} 状态变更到 {dto.TargetStatus}" });
-            }
-
-            // 通过状态模式请求状态变更
-            var result = stateContext.RequestStatusChange(dto.TargetStatus, dto.Reason);
+            // [重构] 使用外观模式处理申请提交逻辑
+            var result = await _storeFacade.SubmitStatusChangeRequestAsync(dto);
 
             if (!result.Success)
             {
+                if (result.Message == "店面不存在") return BadRequest("店面不存在");
                 return BadRequest(new { error = result.Message });
             }
-
-            // 记录申请
-            var appRecord = new ApplicationRecord
-            {
-                ApplicationNo = result.ApplicationNo,
-                StoreId = dto.StoreId,
-                ChangeType = dto.ChangeType,
-                TargetStatus = dto.TargetStatus,
-                Reason = dto.Reason,
-                Applicant = dto.ApplicantAccount,
-                CreatedAt = DateTime.Now
-            };
-            _applications[result.ApplicationNo] = appRecord;
 
             return Ok(new { message = result.Message, applicationNo = result.ApplicationNo });
         }
@@ -375,43 +360,20 @@ namespace oracle_backend.Controllers
         [HttpPost("ApproveStatusChange")]
         public async Task<IActionResult> ApproveStatusChange([FromBody] StoreStatusApprovalDto dto)
         {
-            if (!await _accountRepo.CheckAuthority(dto.ApproverAccount, 2))
-                return BadRequest("权限不足");
+            // [重构] 使用外观模式处理审批逻辑
+            var result = await _storeFacade.ApproveStatusChangeAsync(dto);
 
-            if (!_applications.TryGetValue(dto.ApplicationNo, out var appRecord))
-                return BadRequest("申请不存在");
-
-            var store = await _storeRepo.GetByIdAsync(dto.StoreId);
-            if (store == null)
-                return NotFound("店铺不存在");
-
-            bool approved = dto.ApprovalAction == "通过";
-            string targetStatus = string.IsNullOrEmpty(dto.TargetStatus) ? appRecord.TargetStatus : dto.TargetStatus;
-
-            if (approved)
+            if (!result.Success)
             {
-                // 使用状态模式处理审批
-                var stateContext = CreateStoreStateContext(store);
-                
-                try
-                {
-                    stateContext.ApproveStatusChange(true, targetStatus);
-                    store.STORE_STATUS = stateContext.CurrentStateName;
-                    await _storeRepo.SaveChangesAsync();
-                    
-                    appRecord.Status = "Approved";
-                    return Ok(new { message = "审批通过" });
-                }
-                catch (InvalidOperationException ex)
-                {
-                    return BadRequest(new { error = ex.Message });
-                }
+                // 保持与原控制器一致的错误消息返回格式
+                if (result.Message == "权限不足") return BadRequest("权限不足");
+                if (result.Message == "申请不存在") return BadRequest("申请不存在");
+                if (result.Message == "店铺不存在") return NotFound("店铺不存在");
+
+                return BadRequest(new { error = result.Message });
             }
-            else
-            {
-                appRecord.Status = "Rejected";
-                return Ok(new { message = "审批驳回" });
-            }
+
+            return Ok(new { message = result.Message });
         }
 
         // ==========================================
