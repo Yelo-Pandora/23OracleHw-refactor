@@ -25,6 +25,15 @@ namespace oracle_backend.patterns.Chain_of_Responsibility
         /// 下一个处理者
         /// </summary>
         protected EntryHandler? _nextHandler;
+        
+        /// <summary>
+        /// 获取或设置下一个处理者（用于构建器访问）
+        /// </summary>
+        public EntryHandler? NextHandler
+        {
+            get { return _nextHandler; }
+            protected set { _nextHandler = value; }
+        }
 
         /// <summary>
         /// 设置下一个处理者，支持链式调用
