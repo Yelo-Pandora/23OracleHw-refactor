@@ -3,11 +3,13 @@ using oracle_backend.Models;
 using oracle_backend.patterns.Composite_Pattern.Component;
 using oracle_backend.patterns.Composite_Pattern.Leaf;
 using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Patterns.State.RetailArea;
 using System.ComponentModel.DataAnnotations;
 using oracle_backend.Patterns.Factory.Interfaces;
 
 namespace oracle_backend.Controllers
 {
+    // Refactored with State Pattern
     [Route("api/[controller]")]
     [ApiController]
     public class AreasController : ControllerBase
@@ -24,6 +26,19 @@ namespace oracle_backend.Controllers
             _areaRepository = areaRepository;
             _areaFactory = areaFactory;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// 创建商铺区域状态上下文 (Refactored with State Pattern)
+        /// </summary>
+        private RetailAreaStateContext CreateRetailAreaStateContext(RetailArea retailArea)
+        {
+            return new RetailAreaStateContext(
+                retailArea.AREA_ID,
+                retailArea.BASE_RENT,
+                retailArea.RENT_STATUS,
+                _logger
+            );
         }
 
         // ---------------------------------------------------------
@@ -213,7 +228,7 @@ namespace oracle_backend.Controllers
             return Ok(result);
         }
 
-        // PUT: api/Areas/5
+        // Refactored with State Pattern - PUT: api/Areas/5
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateArea(int id, [FromBody] AreaUpdateDto dto)
         {
@@ -224,6 +239,31 @@ namespace oracle_backend.Controllers
             {
                 // [Factory Pattern] 使用工厂
                 var component = _areaFactory.Create(id, area.CATEGORY);
+
+                // [State Pattern] 如果是Retail区域且要更新租赁状态,使用状态模式验证
+                if (area.CATEGORY.ToUpper() == "RETAIL" && !string.IsNullOrEmpty(dto.RentStatus))
+                {
+                    var retailArea = await _areaRepository.GetRetailAreaAsync(id);
+                    if (retailArea != null && dto.RentStatus != retailArea.RENT_STATUS)
+                    {
+                        var stateContext = CreateRetailAreaStateContext(retailArea);
+                        
+                        // 验证状态转换是否合法
+                        if (!stateContext.CurrentState.CanTransitionTo(dto.RentStatus))
+                        {
+                            return BadRequest(new { error = $"不能从 {stateContext.CurrentStateName} 状态转换到 {dto.RentStatus}" });
+                        }
+
+                        try
+                        {
+                            stateContext.TransitionToState(dto.RentStatus, "手动更新租赁状态");
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            return BadRequest(new { error = ex.Message });
+                        }
+                    }
+                }
 
                 var config = new AreaConfiguration
                 {

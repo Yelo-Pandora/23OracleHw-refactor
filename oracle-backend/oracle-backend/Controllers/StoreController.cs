@@ -3,12 +3,14 @@ using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Patterns.Factory.Interfaces;
+using oracle_backend.Patterns.State.Store;
 using System.ComponentModel.DataAnnotations;
 using System.Security.Cryptography;
 using System.Text;
 
 namespace oracle_backend.Controllers
 {
+    // Refactored with State Pattern
     [Route("api/Store")]
     [ApiController]
     public class StoreController : ControllerBase
@@ -32,6 +34,18 @@ namespace oracle_backend.Controllers
             _storeFactory = storeFactory;
             _legacyContext = legacyContext;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// 创建店铺状态上下文 (Refactored with State Pattern)
+        /// </summary>
+        private StoreStateContext CreateStoreStateContext(Store store)
+        {
+            return new StoreStateContext(
+                store.STORE_ID,
+                store.STORE_STATUS,
+                _logger
+            );
         }
 
         // ==========================================
@@ -195,6 +209,7 @@ namespace oracle_backend.Controllers
             return Ok(store);
         }
 
+        // Refactored with State Pattern - 使用状态模式更新店铺状态
         [HttpPatch("UpdateStoreStatus/{storeId}")]
         public async Task<IActionResult> UpdateStoreStatus(int storeId, [FromQuery] string newStatus, [FromQuery] string? operatorAccount = null)
         {
@@ -207,9 +222,20 @@ namespace oracle_backend.Controllers
             var store = await _storeRepo.GetByIdAsync(storeId);
             if (store == null) return NotFound();
 
-            store.STORE_STATUS = newStatus;
-            await _storeRepo.SaveChangesAsync();
-            return Ok(new { message = "更新成功" });
+            // 使用状态模式验证状态转换
+            var stateContext = CreateStoreStateContext(store);
+            
+            try
+            {
+                stateContext.TransitionToState(newStatus, "管理员更新状态");
+                store.STORE_STATUS = stateContext.CurrentStateName;
+                await _storeRepo.SaveChangesAsync();
+                return Ok(new { message = "更新成功" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
         }
 
         // ==========================================
@@ -306,21 +332,33 @@ namespace oracle_backend.Controllers
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ApplicationRecord> _applications
             = new System.Collections.Concurrent.ConcurrentDictionary<string, ApplicationRecord>();
 
+        // Refactored with State Pattern - 使用状态模式提交状态变更申请
         [HttpPost("StatusChangeRequest")]
         public async Task<IActionResult> SubmitStatusChangeRequest([FromBody] StoreStatusChangeRequestDto dto)
         {
-            // 使用 Repo 检查 Store 和 RentRecord
             var store = await _storeRepo.GetByIdAsync(dto.StoreId);
             if (store == null) return BadRequest("店面不存在");
 
-            // RentStore 检查暂时需要 Context 或者在 Repo 中加方法
-            // 这里为了简单，假设 Repo 未提供 RentCheck，我们通过 GetById 获取 Store 后认为存在即可
-            // (严格来说应该检查 RENT_STORE 表)
+            // 使用状态模式验证是否可以申请状态变更
+            var stateContext = CreateStoreStateContext(store);
+            
+            if (!stateContext.CanRequestStatusChange(dto.TargetStatus))
+            {
+                return BadRequest(new { error = $"不能从 {stateContext.CurrentStateName} 状态变更到 {dto.TargetStatus}" });
+            }
 
-            var applicationNo = $"SA{DateTime.Now:yyyyMMdd}{new Random().Next(1, 1000):D3}";
+            // 通过状态模式请求状态变更
+            var result = stateContext.RequestStatusChange(dto.TargetStatus, dto.Reason);
+
+            if (!result.Success)
+            {
+                return BadRequest(new { error = result.Message });
+            }
+
+            // 记录申请
             var appRecord = new ApplicationRecord
             {
-                ApplicationNo = applicationNo,
+                ApplicationNo = result.ApplicationNo,
                 StoreId = dto.StoreId,
                 ChangeType = dto.ChangeType,
                 TargetStatus = dto.TargetStatus,
@@ -328,11 +366,12 @@ namespace oracle_backend.Controllers
                 Applicant = dto.ApplicantAccount,
                 CreatedAt = DateTime.Now
             };
-            _applications[applicationNo] = appRecord;
+            _applications[result.ApplicationNo] = appRecord;
 
-            return Ok(new { message = "申请提交成功", applicationNo });
+            return Ok(new { message = result.Message, applicationNo = result.ApplicationNo });
         }
 
+        // Refactored with State Pattern - 使用状态模式审批状态变更
         [HttpPost("ApproveStatusChange")]
         public async Task<IActionResult> ApproveStatusChange([FromBody] StoreStatusApprovalDto dto)
         {
@@ -342,16 +381,31 @@ namespace oracle_backend.Controllers
             if (!_applications.TryGetValue(dto.ApplicationNo, out var appRecord))
                 return BadRequest("申请不存在");
 
-            if (dto.ApprovalAction == "通过")
+            var store = await _storeRepo.GetByIdAsync(dto.StoreId);
+            if (store == null)
+                return NotFound("店铺不存在");
+
+            bool approved = dto.ApprovalAction == "通过";
+            string targetStatus = string.IsNullOrEmpty(dto.TargetStatus) ? appRecord.TargetStatus : dto.TargetStatus;
+
+            if (approved)
             {
-                var store = await _storeRepo.GetByIdAsync(dto.StoreId);
-                if (store != null)
+                // 使用状态模式处理审批
+                var stateContext = CreateStoreStateContext(store);
+                
+                try
                 {
-                    store.STORE_STATUS = string.IsNullOrEmpty(dto.TargetStatus) ? appRecord.TargetStatus : dto.TargetStatus;
+                    stateContext.ApproveStatusChange(true, targetStatus);
+                    store.STORE_STATUS = stateContext.CurrentStateName;
                     await _storeRepo.SaveChangesAsync();
+                    
+                    appRecord.Status = "Approved";
+                    return Ok(new { message = "审批通过" });
                 }
-                appRecord.Status = "Approved";
-                return Ok(new { message = "审批通过" });
+                catch (InvalidOperationException ex)
+                {
+                    return BadRequest(new { error = ex.Message });
+                }
             }
             else
             {

@@ -2,10 +2,12 @@ using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Patterns.Factory.Interfaces;
+using oracle_backend.Patterns.State.VenueEvent;
 using System.ComponentModel.DataAnnotations;
 
 namespace oracle_backend.Controllers
 {
+    // Refactored with State Pattern
     [Route("api/[controller]")]
     [ApiController]
     public class VenueEventController : ControllerBase
@@ -23,6 +25,18 @@ namespace oracle_backend.Controllers
             _venueRepo = venueRepo;
             _venueFactory = venueFactory;
             _logger = logger;
+        }
+
+        /// <summary>
+        /// 创建活动状态上下文 (Refactored with State Pattern)
+        /// </summary>
+        private VenueEventStateContext CreateVenueEventStateContext(VenueEventDetail eventDetail)
+        {
+            return new VenueEventStateContext(
+                eventDetail.EVENT_ID,
+                eventDetail.STATUS,
+                _logger
+            );
         }
 
         // DTOs (保持不变)
@@ -168,11 +182,10 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 2. 场地预约审批
+        // Refactored with State Pattern - 使用状态模式审批预约
         [HttpPut("reservations/{eventId}/approve")]
         public async Task<IActionResult> ApproveReservation(int eventId, [FromBody] string? approvalNote)
         {
-            // 获取详情 (包含状态信息)
             var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
             if (venueEventDetail == null)
@@ -180,22 +193,20 @@ namespace oracle_backend.Controllers
                 return NotFound(new { message = "找不到对应的预约记录" });
             }
 
-            if (venueEventDetail.STATUS != "待审批")
-            {
-                return BadRequest(new { message = "该预约已处理，无法重复审批" });
-            }
-
             try
             {
-                venueEventDetail.STATUS = "已通过";
-                // Update 操作在 EF Core 中如果是被追踪实体，直接 SaveChanges 即可，
-                // 或者调用 Update 方法显式标记
-                // BaseRepository.Update(venueEventDetail) 需要泛型匹配，这里是 Detail 对象，
-                // 所以我们依赖 SaveChangesAsync 的 ChangeTracker，或者在 Repo 中加 UpdateDetail 方法。
-                // 鉴于 AddVenueEventDetailAsync 存在，EF Context 会追踪它。
+                // 使用状态模式处理审批
+                var stateContext = CreateVenueEventStateContext(venueEventDetail);
+                stateContext.Approve();
+                
+                venueEventDetail.STATUS = stateContext.CurrentStateName;
                 await _venueRepo.SaveChangesAsync();
 
                 return Ok(new { message = "预约审批通过" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -204,20 +215,27 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 3. 场地预约拒绝
+        // Refactored with State Pattern - 使用状态模式驳回预约
         [HttpPut("reservations/{eventId}/reject")]
         public async Task<IActionResult> RejectReservation(int eventId, [FromBody] string? rejectionReason)
         {
             var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
             if (venueEventDetail == null) return NotFound(new { message = "找不到对应的预约记录" });
-            if (venueEventDetail.STATUS != "待审批") return BadRequest(new { message = "该预约已处理，无法重复审批" });
 
             try
             {
-                venueEventDetail.STATUS = "已驳回";
+                // 使用状态模式处理驳回
+                var stateContext = CreateVenueEventStateContext(venueEventDetail);
+                stateContext.Reject(rejectionReason ?? "未提供原因");
+                
+                venueEventDetail.STATUS = stateContext.CurrentStateName;
                 await _venueRepo.SaveChangesAsync();
                 return Ok(new { message = "预约已驳回" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -226,21 +244,21 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 4. 场地活动管理功能
+        // Refactored with State Pattern - 使用状态模式更新活动
         [HttpPut("events/{eventId}")]
         public async Task<IActionResult> UpdateVenueEvent(int eventId, [FromBody] VenueEventUpdateDto dto)
         {
-            // 获取主活动实体 (BaseRepository 方法)
             var venueEvent = await _venueRepo.GetByIdAsync(eventId);
             if (venueEvent == null) return NotFound(new { message = "找不到对应的活动记录" });
 
-            // 获取活动详情实体 (VenueEventRepository 扩展方法)
             var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
             if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动详情记录" });
 
-            if (venueEventDetail.STATUS == "已结束")
+            // 使用状态模式检查是否可以修改
+            var stateContext = CreateVenueEventStateContext(venueEventDetail);
+            if (!stateContext.CanModify())
             {
-                return BadRequest(new { message = "活动已结束，不可修改或取消" });
+                return BadRequest(new { message = $"活动当前状态 {stateContext.CurrentStateName} 不允许修改" });
             }
 
             try
@@ -248,15 +266,19 @@ namespace oracle_backend.Controllers
                 // 更新字段
                 if (!string.IsNullOrEmpty(dto.EventName)) venueEvent.EVENT_NAME = dto.EventName;
                 if (dto.Headcount.HasValue) venueEvent.HEADCOUNT = dto.Headcount.Value;
-                if (!string.IsNullOrEmpty(dto.Status)) venueEventDetail.STATUS = dto.Status;
+                
+                // 如果要更新状态,使用状态模式验证
+                if (!string.IsNullOrEmpty(dto.Status) && dto.Status != venueEventDetail.STATUS)
+                {
+                    stateContext.TransitionToState(dto.Status, "手动更新状态");
+                    venueEventDetail.STATUS = stateContext.CurrentStateName;
+                }
 
                 // 处理参与人员 (批量导入)
                 if (dto.ParticipantAccounts != null && dto.ParticipantAccounts.Any())
                 {
-                    // 先清空现有 (使用 Repo 方法)
                     await _venueRepo.RemoveTempAuthoritiesByEventIdAsync(eventId);
 
-                    // 添加新的
                     foreach (var account in dto.ParticipantAccounts)
                     {
                         var tempAuthority = _venueFactory.CreateTempAuthority(account, eventId, 3);
@@ -264,11 +286,14 @@ namespace oracle_backend.Controllers
                     }
                 }
 
-                // 显式调用 Update (对于 BaseRepo 管理的主实体)
                 _venueRepo.Update(venueEvent);
                 await _venueRepo.SaveChangesAsync();
 
                 return Ok(new { message = "活动信息更新成功" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -277,20 +302,27 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 5. 取消活动
+        // Refactored with State Pattern - 使用状态模式取消活动
         [HttpPut("events/{eventId}/cancel")]
         public async Task<IActionResult> CancelVenueEvent(int eventId)
         {
             var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
             if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动记录" });
-            if (venueEventDetail.STATUS == "已结束") return BadRequest(new { message = "活动已结束，不可修改或取消" });
 
             try
             {
-                venueEventDetail.STATUS = "已取消";
+                // 使用状态模式处理取消
+                var stateContext = CreateVenueEventStateContext(venueEventDetail);
+                stateContext.Cancel();
+                
+                venueEventDetail.STATUS = stateContext.CurrentStateName;
                 await _venueRepo.SaveChangesAsync();
                 return Ok(new { message = "活动已取消，场地资源已释放" });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
@@ -326,14 +358,20 @@ namespace oracle_backend.Controllers
             return Ok(result);
         }
 
-        // 7. 场地活动结算收费功能
+        // Refactored with State Pattern - 使用状态模式进行结算
         [HttpPost("events/{eventId}/settlement")]
         public async Task<IActionResult> CreateSettlement(int eventId, [FromBody] VenueEventSettlementDto dto)
         {
             var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
 
             if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动记录" });
-            if (venueEventDetail.STATUS != "已结束") return BadRequest(new { message = "只有已结束的活动才能进行结算" });
+            
+            // 使用状态模式检查是否可以结算
+            var stateContext = CreateVenueEventStateContext(venueEventDetail);
+            if (!stateContext.CanSettle())
+            {
+                return BadRequest(new { message = $"活动当前状态 {stateContext.CurrentStateName} 不允许结算" });
+            }
 
             try
             {
