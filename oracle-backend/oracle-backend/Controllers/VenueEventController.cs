@@ -5,6 +5,8 @@ using oracle_backend.Patterns.Factory.Interfaces;
 using oracle_backend.Patterns.State.VenueEvent;
 using System.ComponentModel.DataAnnotations;
 using oracle_backend.patterns.Facade_Pattern.Interfaces; // 引用外观模式接口
+using oracle_backend.Dbcontexts;
+using oracle_backend.patterns.Chain_of_Responsibility;
 
 namespace oracle_backend.Controllers
 {
@@ -18,6 +20,9 @@ namespace oracle_backend.Controllers
         private readonly ILogger<VenueEventController> _logger;
         // [新增] 外观接口
         private readonly IVenueEventSystemFacade _venueFacade;
+        // [新增] 数据库上下文
+        private readonly ParkingContext _context;
+        private readonly ComplexDbContext _complexContext;
 
         // 构造函数注入 Repository
         public VenueEventController(
@@ -25,13 +30,17 @@ namespace oracle_backend.Controllers
             IVenueEventFactory venueFactory,
             ILogger<VenueEventController> logger,
             // [新增] 注入参数
-            IVenueEventSystemFacade venueFacade)
+            IVenueEventSystemFacade venueFacade,
+            ParkingContext context,
+            ComplexDbContext complexContext)
         {
             _venueRepo = venueRepo;
             _venueFactory = venueFactory;
             _logger = logger;
             // [新增] 赋值
             _venueFacade = venueFacade;
+            _context = context;
+            _complexContext = complexContext;
         }
 
         /// <summary>
@@ -118,45 +127,44 @@ namespace oracle_backend.Controllers
             public string Status { get; set; }
         }
 
-        // 1. 场地预约功能
+        // 1. 场地预约功能 - 使用责任链模式重构
         [HttpPost("reservations")]
         public async Task<IActionResult> CreateReservation([FromBody] VenueEventReservationDto dto)
         {
-            // 验证时间有效性
-            if (dto.RentEndTime <= dto.RentStartTime)
-            {
-                return BadRequest(new { message = "结束时间需晚于起始时间" });
-            }
-
-            // 验证活动区域ID是否有效 (使用 Repository 辅助检查)
-            var eventArea = await _venueRepo.GetEventAreaByIdAsync(dto.AreaId);
-            if (eventArea == null)
-            {
-                return BadRequest(new { message = "活动区域ID无效" });
-            }
-
-            // 检查时间段内是否已被占用 (使用 Repository 封装的逻辑)
-            var conflictingReservation = await _venueRepo.GetConflictingReservationAsync(
-                dto.AreaId, dto.RentStartTime, dto.RentEndTime);
-
-            if (conflictingReservation != null)
-            {
-                return BadRequest(new { message = "该区域在指定时间内已被占用" });
-            }
-
-            // 验证合作方是否存在 (使用 Repository 辅助检查)
-            if (!await _venueRepo.CollaborationExistsAsync(dto.CollaborationId))
-            {
-                return BadRequest(new { message = "合作方信息不存在" });
-            }
-
-            // 这里涉及两个表的插入，BaseRepository 通常共享同一个 Context 实例，
-            // 只要是在同一个 Scope 内，多次 SaveChangesAsync 是安全的。
             try
             {
+                // 创建场地预约请求
+                var request = new VenueReservationRequest
+                {
+                    CollaborationId = dto.CollaborationId,
+                    AreaId = dto.AreaId,
+                    RentStartTime = dto.RentStartTime,
+                    RentEndTime = dto.RentEndTime,
+                    RentPurpose = dto.RentPurpose,
+                    CollaborationName = dto.CollaborationName,
+                    StaffPosition = dto.StaffPosition,
+                    EventName = dto.EventName,
+                    ExpectedHeadcount = dto.ExpectedHeadcount,
+                    ExpectedFee = dto.ExpectedFee,
+                    Capacity = dto.Capacity,
+                    Expense = dto.Expense
+                };
+
+                // 使用责任链构建器构建默认责任链
+                var builder = new VenueReservationHandlerBuilder(_complexContext);
+                var handlerChain = builder.BuildDefaultChain();
+
+                // 从责任链的第一个处理者开始处理
+                // 如果所有校验通过，继续执行；如果任何校验失败，会抛出 VenueReservationException
+                await handlerChain.HandleAsync(request);
+
+                // 以下是原有的业务逻辑，保持不变
+                // 这里涉及两个表的插入，BaseRepository 通常共享同一个 Context 实例，
+                // 只要是在同一个 Scope 内，多次 SaveChangesAsync 是安全的。
+
                 // [重构] 使用工厂创建聚合对象 (Event + Detail)
                 // 状态 "待审批" 等逻辑被封装在工厂内
-                var result = _venueFactory.CreateReservation(dto, eventArea.CAPACITY ?? 0);
+                var result = _venueFactory.CreateReservation(dto, request.EventArea.CAPACITY ?? 0);
 
                 await _venueRepo.AddAsync(result.Event);
                 await _venueRepo.SaveChangesAsync(); // 获取 ID
@@ -181,6 +189,11 @@ namespace oracle_backend.Controllers
                     message = "场地预约申请提交成功，等待审批",
                     eventId = result.Event.EVENT_ID
                 });
+            }
+            catch (VenueReservationException ex)
+            {
+                _logger.LogError(ex, "场地预约校验失败: {Message}", ex.Message);
+                return BadRequest(new { message = ex.Message });
             }
             catch (Exception ex)
             {
