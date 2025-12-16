@@ -15,12 +15,14 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class VenueEventController : ControllerBase
     {
+        // [Repository Pattern] 场地活动仓库接口
         private readonly IVenueEventRepository _venueRepo;
+        // [Factory Pattern] 场地活动工厂接口
         private readonly IVenueEventFactory _venueFactory;
         private readonly ILogger<VenueEventController> _logger;
-        // [新增] 外观接口
+        // [Facade Pattern] 外观接口
         private readonly IVenueEventSystemFacade _venueFacade;
-        // [新增] 数据库上下文
+        // [DbContext] 数据库上下文
         private readonly ParkingContext _context;
         private readonly ComplexDbContext _complexContext;
 
@@ -29,7 +31,7 @@ namespace oracle_backend.Controllers
             IVenueEventRepository venueRepo,
             IVenueEventFactory venueFactory,
             ILogger<VenueEventController> logger,
-            // [新增] 注入参数
+            // [Facade Pattern] 注入参数
             IVenueEventSystemFacade venueFacade,
             ParkingContext context,
             ComplexDbContext complexContext)
@@ -37,7 +39,7 @@ namespace oracle_backend.Controllers
             _venueRepo = venueRepo;
             _venueFactory = venueFactory;
             _logger = logger;
-            // [新增] 赋值
+            // [Facade Pattern] 赋值
             _venueFacade = venueFacade;
             _context = context;
             _complexContext = complexContext;
@@ -150,19 +152,14 @@ namespace oracle_backend.Controllers
                     Expense = dto.Expense
                 };
 
-                // 使用责任链构建器构建默认责任链
+                // [Chain of Responsibility Pattern] 使用责任链构建器构建默认责任链
                 var builder = new VenueReservationHandlerBuilder(_complexContext);
                 var handlerChain = builder.BuildDefaultChain();
 
-                // 从责任链的第一个处理者开始处理
-                // 如果所有校验通过，继续执行；如果任何校验失败，会抛出 VenueReservationException
+                // [Chain of Responsibility Pattern] 从责任链的第一个处理者开始处理
                 await handlerChain.HandleAsync(request);
 
-                // 以下是原有的业务逻辑，保持不变
-                // 这里涉及两个表的插入，BaseRepository 通常共享同一个 Context 实例，
-                // 只要是在同一个 Scope 内，多次 SaveChangesAsync 是安全的。
-
-                // [重构] 使用工厂创建聚合对象 (Event + Detail)
+                // [Factory Pattern] 使用工厂创建聚合对象 (Event + Detail)
                 // 状态 "待审批" 等逻辑被封装在工厂内
                 var result = _venueFactory.CreateReservation(dto, request.EventArea.CAPACITY ?? 0);
 
@@ -206,36 +203,9 @@ namespace oracle_backend.Controllers
         [HttpPut("reservations/{eventId}/approve")]
         public async Task<IActionResult> ApproveReservation(int eventId, [FromBody] string? approvalNote)
         {
-            //var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
-
-            //if (venueEventDetail == null)
-            //{
-            //    return NotFound(new { message = "找不到对应的预约记录" });
-            //}
-
-            //try
-            //{
-            //    // 使用状态模式处理审批
-            //    var stateContext = CreateVenueEventStateContext(venueEventDetail);
-            //    stateContext.Approve();
-
-            //    venueEventDetail.STATUS = stateContext.CurrentStateName;
-            //    await _venueRepo.SaveChangesAsync();
-
-            //    return Ok(new { message = "预约审批通过" });
-            //}
-            //catch (InvalidOperationException ex)
-            //{
-            //    return BadRequest(new { message = ex.Message });
-            //}
-            //catch (Exception ex)
-            //{
-            //    _logger.LogError(ex, $"审批预约 {eventId} 失败");
-            //    return StatusCode(500, new { message = "审批失败" });
-            //}
             try
             {
-                // [重构] 使用外观模式审批预约
+                // [Facade Pattern] 使用外观模式审批预约
                 await _venueFacade.ApproveReservationAsync(eventId);
                 return Ok(new { message = "预约审批通过" });
             }
@@ -260,32 +230,9 @@ namespace oracle_backend.Controllers
         [HttpPut("reservations/{eventId}/reject")]
         public async Task<IActionResult> RejectReservation(int eventId, [FromBody] string? rejectionReason)
         {
-            //var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
-
-            //if (venueEventDetail == null) return NotFound(new { message = "找不到对应的预约记录" });
-
-            //try
-            //{
-            //    // 使用状态模式处理驳回
-            //    var stateContext = CreateVenueEventStateContext(venueEventDetail);
-            //    stateContext.Reject(rejectionReason ?? "未提供原因");
-
-            //    venueEventDetail.STATUS = stateContext.CurrentStateName;
-            //    await _venueRepo.SaveChangesAsync();
-            //    return Ok(new { message = "预约已驳回" });
-            //}
-            //catch (InvalidOperationException ex)
-            //{
-            //    return BadRequest(new { message = ex.Message });
-            //}
-            //catch (Exception ex)
-            //{
-            //    _logger.LogError(ex, $"驳回预约 {eventId} 失败");
-            //    return StatusCode(500, new { message = "驳回失败" });
-            //}
             try
             {
-                // [重构] 使用外观模式驳回预约
+                // [Facade Pattern] 使用外观模式驳回预约
                 await _venueFacade.RejectReservationAsync(eventId, rejectionReason ?? "未提供原因");
                 return Ok(new { message = "预约已驳回" });
             }
@@ -308,61 +255,9 @@ namespace oracle_backend.Controllers
         [HttpPut("events/{eventId}")]
         public async Task<IActionResult> UpdateVenueEvent(int eventId, [FromBody] VenueEventUpdateDto dto)
         {
-            //var venueEvent = await _venueRepo.GetByIdAsync(eventId);
-            //if (venueEvent == null) return NotFound(new { message = "找不到对应的活动记录" });
-
-            //var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
-            //if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动详情记录" });
-
-            //// 使用状态模式检查是否可以修改
-            //var stateContext = CreateVenueEventStateContext(venueEventDetail);
-            //if (!stateContext.CanModify())
-            //{
-            //    return BadRequest(new { message = $"活动当前状态 {stateContext.CurrentStateName} 不允许修改" });
-            //}
-
-            //try
-            //{
-            //    // 更新字段
-            //    if (!string.IsNullOrEmpty(dto.EventName)) venueEvent.EVENT_NAME = dto.EventName;
-            //    if (dto.Headcount.HasValue) venueEvent.HEADCOUNT = dto.Headcount.Value;
-
-            //    // 如果要更新状态,使用状态模式验证
-            //    if (!string.IsNullOrEmpty(dto.Status) && dto.Status != venueEventDetail.STATUS)
-            //    {
-            //        stateContext.TransitionToState(dto.Status, "手动更新状态");
-            //        venueEventDetail.STATUS = stateContext.CurrentStateName;
-            //    }
-
-            //    // 处理参与人员 (批量导入)
-            //    if (dto.ParticipantAccounts != null && dto.ParticipantAccounts.Any())
-            //    {
-            //        await _venueRepo.RemoveTempAuthoritiesByEventIdAsync(eventId);
-
-            //        foreach (var account in dto.ParticipantAccounts)
-            //        {
-            //            var tempAuthority = _venueFactory.CreateTempAuthority(account, eventId, 3);
-            //            await _venueRepo.AddTempAuthorityAsync(tempAuthority);
-            //        }
-            //    }
-
-            //    _venueRepo.Update(venueEvent);
-            //    await _venueRepo.SaveChangesAsync();
-
-            //    return Ok(new { message = "活动信息更新成功" });
-            //}
-            //catch (InvalidOperationException ex)
-            //{
-            //    return BadRequest(new { message = ex.Message });
-            //}
-            //catch (Exception ex)
-            //{
-            //    _logger.LogError(ex, $"更新活动 {eventId} 失败");
-            //    return StatusCode(500, new { message = "更新活动失败" });
-            //}
             try
             {
-                // [重构] 使用外观模式更新活动信息（含状态变更和人员管理）
+                // [Facade Pattern] 使用外观模式更新活动信息（含状态变更和人员管理）
                 await _venueFacade.UpdateEventAsync(eventId, dto);
                 return Ok(new { message = "活动信息更新成功" });
             }
@@ -385,32 +280,9 @@ namespace oracle_backend.Controllers
         [HttpPut("events/{eventId}/cancel")]
         public async Task<IActionResult> CancelVenueEvent(int eventId)
         {
-            //var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
-
-            //if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动记录" });
-
-            //try
-            //{
-            //    // 使用状态模式处理取消
-            //    var stateContext = CreateVenueEventStateContext(venueEventDetail);
-            //    stateContext.Cancel();
-
-            //    venueEventDetail.STATUS = stateContext.CurrentStateName;
-            //    await _venueRepo.SaveChangesAsync();
-            //    return Ok(new { message = "活动已取消，场地资源已释放" });
-            //}
-            //catch (InvalidOperationException ex)
-            //{
-            //    return BadRequest(new { message = ex.Message });
-            //}
-            //catch (Exception ex)
-            //{
-            //    _logger.LogError(ex, $"取消活动 {eventId} 失败");
-            //    return StatusCode(500, new { message = "取消活动失败" });
-            //}
             try
             {
-                // [重构] 使用外观模式取消活动
+                // [Facade Pattern] 使用外观模式取消活动
                 await _venueFacade.CancelEventAsync(eventId);
                 return Ok(new { message = "活动已取消，场地资源已释放" });
             }
@@ -460,56 +332,9 @@ namespace oracle_backend.Controllers
         [HttpPost("events/{eventId}/settlement")]
         public async Task<IActionResult> CreateSettlement(int eventId, [FromBody] VenueEventSettlementDto dto)
         {
-            //var venueEventDetail = await _venueRepo.GetEventDetailAsync(eventId);
-
-            //if (venueEventDetail == null) return NotFound(new { message = "找不到对应的活动记录" });
-
-            //// 使用状态模式检查是否可以结算
-            //var stateContext = CreateVenueEventStateContext(venueEventDetail);
-            //if (!stateContext.CanSettle())
-            //{
-            //    return BadRequest(new { message = $"活动当前状态 {stateContext.CurrentStateName} 不允许结算" });
-            //}
-
-            //try
-            //{
-            //    var rentHours = (venueEventDetail.RENT_END - venueEventDetail.RENT_START).TotalHours;
-            //    var totalFee = dto.VenueFee + (dto.AdditionalServiceFee ?? 0);
-
-            //    var settlementInfo = new
-            //    {
-            //        EventId = eventId,
-            //        EventName = venueEventDetail.venueEventNavigation.EVENT_NAME,
-            //        AreaId = venueEventDetail.AREA_ID,
-            //        RentStart = venueEventDetail.RENT_START,
-            //        RentEnd = venueEventDetail.RENT_END,
-            //        RentHours = Math.Round(rentHours, 2),
-            //        VenueFee = dto.VenueFee,
-            //        AdditionalServiceFee = dto.AdditionalServiceFee ?? 0,
-            //        TotalFee = totalFee,
-            //        PaymentMethod = dto.PaymentMethod,
-            //        InvoiceInfo = dto.InvoiceInfo,
-            //        SettlementTime = DateTime.Now
-            //    };
-
-            //    venueEventDetail.STATUS = "已结算";
-            //    venueEventDetail.FUNDING = totalFee;
-            //    await _venueRepo.SaveChangesAsync();
-
-            //    return Ok(new
-            //    {
-            //        message = "结算单生成成功",
-            //        settlement = settlementInfo
-            //    });
-            //}
-            //catch (Exception ex)
-            //{
-            //    _logger.LogError(ex, $"创建结算单 {eventId} 失败");
-            //    return StatusCode(500, new { message = "创建结算单失败" });
-            //}
             try
             {
-                // [重构] 使用外观模式进行活动结算
+                // [Facade Pattern] 使用外观模式进行活动结算
                 var settlementInfo = await _venueFacade.SettleEventAsync(eventId, dto);
 
                 return Ok(new

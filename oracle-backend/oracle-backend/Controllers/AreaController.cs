@@ -9,12 +9,13 @@ using oracle_backend.Patterns.Factory.Interfaces;
 
 namespace oracle_backend.Controllers
 {
-    // Refactored with State Pattern
     [Route("api/[controller]")]
     [ApiController]
     public class AreasController : ControllerBase
     {
+        // [Repository Pattern]
         private readonly IAreaRepository _areaRepository;
+        // [Factory Pattern]
         private readonly IAreaComponentFactory _areaFactory;
         private readonly ILogger<AreasController> _logger;
 
@@ -29,7 +30,7 @@ namespace oracle_backend.Controllers
         }
 
         /// <summary>
-        /// 创建商铺区域状态上下文 (Refactored with State Pattern)
+        /// [State Pattern] 创建商铺区域状态上下文
         /// </summary>
         private RetailAreaStateContext CreateRetailAreaStateContext(RetailArea retailArea)
         {
@@ -41,30 +42,18 @@ namespace oracle_backend.Controllers
             );
         }
 
-        // ---------------------------------------------------------
-        // DTO 定义 (放在 Controller 内部或单独文件均可，这里为了方便直接包含)
-        // ---------------------------------------------------------
         public class AreaCreateDto
         {
             public int AreaId { get; set; }
             public int IsEmpty { get; set; } // 0 或 1
             public int? AreaSize { get; set; }
-
             [Required]
-            public string Category { get; set; } // "RETAIL", "EVENT", "PARKING", "OTHER"
-
-            // Retail 特有
+            public string Category { get; set; } 
             public string? RentStatus { get; set; }
             public double? BaseRent { get; set; }
-
-            // Event 特有
             public int? Capacity { get; set; }
-            public int? AreaFee { get; set; } // 原定义为 int?
-
-            // Parking 特有
-            public int? ParkingFee { get; set; } // 原定义为 int?
-
-            // Other 特有
+            public int? AreaFee { get; set; } 
+            public int? ParkingFee { get; set; } 
             public string? Type { get; set; }
         }
 
@@ -72,19 +61,11 @@ namespace oracle_backend.Controllers
         {
             public int? IsEmpty { get; set; }
             public int? AreaSize { get; set; }
-
-            // Retail
             public string? RentStatus { get; set; }
             public double? BaseRent { get; set; }
-
-            // Event
             public int? Capacity { get; set; }
             public int? AreaFee { get; set; }
-
-            // Parking
             public int? ParkingFee { get; set; }
-
-            // Other
             public string? Type { get; set; }
         }
 
@@ -121,10 +102,10 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // [Factory Pattern] 使用工厂创建组件，不再手动 new
+                // [Factory Pattern] 使用工厂创建组件
+                // [Composite Pattern] 创建的组件作为叶子节点
                 var component = _areaFactory.Create(dto.AreaId, dto.Category);
 
-                // 构造配置包 (保持不变)
                 var config = new AreaConfiguration
                 {
                     IsEmpty = dto.IsEmpty,
@@ -178,7 +159,6 @@ namespace oracle_backend.Controllers
 
                 if (info == null) continue;
 
-                // 映射回前端需要的匿名对象结构 (保持不变)
                 resultList.Add(new
                 {
                     AREA_ID = info.AreaId,
@@ -210,7 +190,6 @@ namespace oracle_backend.Controllers
 
             if (info == null) return NotFound();
 
-            // 结果构建 (保持不变)
             var result = new
             {
                 AREA_ID = info.AreaId,
@@ -228,7 +207,7 @@ namespace oracle_backend.Controllers
             return Ok(result);
         }
 
-        // Refactored with State Pattern - PUT: api/Areas/5
+        // PUT: api/Areas/5
         [HttpPut("{id}")]
         public async Task<IActionResult> UpdateArea(int id, [FromBody] AreaUpdateDto dto)
         {
@@ -302,7 +281,7 @@ namespace oracle_backend.Controllers
             // 1. [Factory Pattern] 使用工厂构建组件
             var component = _areaFactory.Create(id, area.CATEGORY);
 
-            // 2. 校验删除条件
+            // 2. 校验删除条件 (Component 逻辑)
             var error = await component.ValidateDeleteConditionAsync();
             if (error != null)
             {

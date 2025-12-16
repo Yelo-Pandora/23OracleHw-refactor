@@ -5,7 +5,7 @@ using System.Threading.Tasks;
 using oracle_backend.Models;
 using Microsoft.Extensions.Logging;
 using oracle_backend.Patterns.Repository.Interfaces;
-using oracle_backend.Patterns.Factory.Interfaces; // [新增] 引入工厂接口
+using oracle_backend.Patterns.Factory.Interfaces; // 引入工厂接口
 
 namespace oracle_backend.Services
 {
@@ -26,13 +26,15 @@ namespace oracle_backend.Services
 
     public class SaleEventService : ISaleEventService
     {
+        // [Repository Pattern] 促销活动仓库接口
         private readonly ISaleEventRepository _repo;
-        private readonly ISaleEventFactory _factory; // [新增] 注入工厂
+        // [Factory Pattern] 促销活动工厂接口
+        private readonly ISaleEventFactory _factory;
         private readonly ILogger<SaleEventService> _logger;
 
         public SaleEventService(
             ISaleEventRepository repo,
-            ISaleEventFactory factory, // [新增] 构造函数注入
+            ISaleEventFactory factory, // [Factory Pattern] 构造函数注入
             ILogger<SaleEventService> logger)
         {
             _repo = repo;
@@ -66,7 +68,7 @@ namespace oracle_backend.Services
             int maxId = await _repo.GetMaxEventIdAsync();
             int newId = maxId + 1;
 
-            // [重构] 使用工厂创建实体，替代直接 new SaleEvent
+            // [Factory Pattern] 使用工厂创建实体，替代直接 new SaleEvent
             var saleEvent = _factory.CreateSaleEvent(newId, dto);
 
             await _repo.AddAsync(saleEvent);
@@ -126,7 +128,7 @@ namespace oracle_backend.Services
             // 模拟调用外部系统获取数据
             var reportData = await FetchSalesDataFromExternalSystem(saleEvent);
 
-            // [重构] 使用工厂创建报表对象，ROI 计算逻辑已移至工厂内部
+            // [Factory Pattern] 使用工厂创建报表对象，ROI 计算逻辑已移至工厂内部
             return _factory.CreateReport(
                 saleEvent,
                 reportData.SalesIncrement,
@@ -142,7 +144,7 @@ namespace oracle_backend.Services
             if (existing != null)
                 throw new Exception("商铺已参与该活动");
 
-            // [重构] 使用工厂创建多对多关联实体
+            // [Factory Pattern] 使用工厂创建多对多关联实体
             var partStore = _factory.CreatePartStore(eventId, storeId);
 
             await _repo.AddPartStoreAsync(partStore);
@@ -171,8 +173,6 @@ namespace oracle_backend.Services
         }
 
         // --- 私有辅助方法 ---
-
-        // [移除] CalculateROI 已移动到 SaleEventFactory 中
 
         private async Task<(double SalesIncrement, double CouponRedemptionRate)>
             FetchSalesDataFromExternalSystem(SaleEvent saleEvent)

@@ -11,8 +11,9 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class AccountController : ControllerBase
     {
-        // 只注入 IAccountRepository，保持与原 AccountDbContext 的一一对应关系
+        // [Repository Pattern] 使用仓储接口解耦数据访问
         private readonly IAccountRepository _accountRepo;
+        // [Factory Pattern] 使用工厂接口创建复杂对象
         private readonly IAccountFactory _accountFactory;
         private readonly ILogger<AccountController> _logger;
 
@@ -79,7 +80,7 @@ namespace oracle_backend.Controllers
 
                 try
                 {
-                    // [重构] 使用工厂创建对象，Controller 不再关心权限代码是多少
+                    // [Factory Pattern] 使用工厂创建对象，封装创建逻辑（如权限默认值、密码加密等）
                     var account = _accountFactory.CreateAccount(registerDto, isFirstUser);
 
                     await _accountRepo.AddAsync(account);
@@ -313,7 +314,7 @@ namespace oracle_backend.Controllers
             var allAccounts = await _accountRepo.GetAllAsync();
             if (allAccounts == null || !allAccounts.Any()) return Ok(new List<AccountDetailDto>());
 
-            // 使用 Repository 新增的方法获取带导航属性的关联数据
+            // [Repository Pattern] 使用 Repository 新增的方法获取带导航属性的关联数据
             var staffLinks = await _accountRepo.GetAllStaffAccountsWithInfoAsync();
             var staffLinkDict = staffLinks.ToDictionary(sa => sa.ACCOUNT, sa => sa);
 
@@ -462,7 +463,7 @@ namespace oracle_backend.Controllers
                         var existingStoreIdLink = await _accountRepo.AccountFromStoreID(bindDto.ID);
                         if (existingStoreIdLink != null) return Conflict("该商铺已经绑定了一个账号。");
 
-                   var storeAccount = _accountFactory.CreateStoreLink(bindDto.ACCOUNT, bindDto.ID);
+                        var storeAccount = _accountFactory.CreateStoreLink(bindDto.ACCOUNT, bindDto.ID);
                         await _accountRepo.AddStoreAccountLink(storeAccount);
                         await _accountRepo.SaveChangesAsync();
                         return Ok("绑定成功");

@@ -16,13 +16,16 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class StoreController : ControllerBase
     {
+        // [Repository Pattern] 商店仓库接口
         private readonly IStoreRepository _storeRepo;
+        // [Repository Pattern] 账号仓库接口
         private readonly IAccountRepository _accountRepo;
+        // [Factory Pattern] 商店工厂接口
         private readonly IStoreFactory _storeFactory;
         // 保留 Context 用于尚未迁移的复杂业务逻辑
         private readonly StoreDbContext _legacyContext;
         private readonly ILogger<StoreController> _logger;
-        // [新增] 外观接口
+        // [Facade Pattern] 外观接口
         private readonly IStoreSystemFacade _storeFacade;
 
         public StoreController(
@@ -31,7 +34,7 @@ namespace oracle_backend.Controllers
             IStoreFactory storeFactory,
             StoreDbContext legacyContext,
             ILogger<StoreController> logger,
-            // [新增] 注入参数
+            // [Facade Pattern] 注入参数
             IStoreSystemFacade storeFacade)
         {
             _storeRepo = storeRepo;
@@ -39,7 +42,7 @@ namespace oracle_backend.Controllers
             _storeFactory = storeFactory;
             _legacyContext = legacyContext;
             _logger = logger;
-            // [新增] 赋值
+            // [Facade Pattern] 赋值
             _storeFacade = storeFacade;
         }
 
@@ -81,6 +84,7 @@ namespace oracle_backend.Controllers
                 if (await _storeRepo.AreaIdExists(dto.AreaId))
                     return BadRequest(new { error = "该区域ID已存在，请重新设置" });
 
+                // [Factory Pattern] 创建 RetailArea 实例
                 var retailArea = _storeFactory.CreateRetailArea(dto);
 
                 // TPT 继承验证见文末
@@ -123,8 +127,7 @@ namespace oracle_backend.Controllers
                 // 1. 获取 ID (Repo 职责)
                 var storeId = await _storeRepo.GetNextStoreId();
 
-                // 2. [重构] 使用工厂创建所有相关实体 (Store, RentStore, Account, StoreAccount)
-                //    这里封装了密码生成、默认状态、实体关联等逻辑
+                // 2. [Factory Pattern] 使用工厂创建所有相关实体 (Store, RentStore, Account, StoreAccount)
                 var agg = _storeFactory.CreateMerchantAggregate(dto, storeId);
 
                 // 3. 持久化 (Repo 职责)
@@ -170,6 +173,7 @@ namespace oracle_backend.Controllers
                 if (await _storeRepo.TenantExists(dto.TenantName, dto.ContactInfo)) return BadRequest(new { error = "租户已存在" });
 
                 var storeId = await _storeRepo.GetNextStoreId();
+                // [Factory Pattern] 使用工厂创建关联实体
                 var result = _storeFactory.CreateMerchantWithExistingAccount(dto, storeId);
 
                 await _storeRepo.AddAsync(result.Store);
@@ -222,7 +226,7 @@ namespace oracle_backend.Controllers
         {
             try
             {
-                // [重构] 使用外观模式替代原有的权限检查、状态上下文创建和转换逻辑
+                // [Facade Pattern] 使用外观模式替代原有的权限检查、状态上下文创建和转换逻辑
                 await _storeFacade.UpdateStoreStatusAsync(storeId, newStatus, operatorAccount ?? "");
                 return Ok(new { message = "更新成功" });
             }
@@ -344,7 +348,7 @@ namespace oracle_backend.Controllers
         [HttpPost("StatusChangeRequest")]
         public async Task<IActionResult> SubmitStatusChangeRequest([FromBody] StoreStatusChangeRequestDto dto)
         {
-            // [重构] 使用外观模式处理申请提交逻辑
+            // [Facade Pattern] 使用外观模式处理申请提交逻辑
             var result = await _storeFacade.SubmitStatusChangeRequestAsync(dto);
 
             if (!result.Success)
@@ -360,7 +364,7 @@ namespace oracle_backend.Controllers
         [HttpPost("ApproveStatusChange")]
         public async Task<IActionResult> ApproveStatusChange([FromBody] StoreStatusApprovalDto dto)
         {
-            // [重构] 使用外观模式处理审批逻辑
+            // [Facade Pattern] 使用外观模式处理审批逻辑
             var result = await _storeFacade.ApproveStatusChangeAsync(dto);
 
             if (!result.Success)

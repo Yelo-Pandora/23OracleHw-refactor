@@ -22,10 +22,14 @@ namespace oracle_backend.Controllers
         //private readonly ComplexDbContext _eventContext;
         private readonly AccountDbContext _accountContext;//这个DbContext仍需保留，有一个函数用到
 
+        // [Repository Pattern] 仓库接口
         private readonly ICollaborationRepository _collabRepo;
+        // [Repository Pattern] 仓库接口
         private readonly IAccountRepository _accountRepo;
 
+        // [Factory Pattern] 员工组件工厂接口 (用于创建 Composite Leaf)
         private readonly IPersonComponentFactory _personFactory;
+        // [Factory Pattern] 账号工厂接口
         private readonly IAccountFactory _accountFactory;
 
         private readonly ILogger<StaffController> _logger;
@@ -245,6 +249,7 @@ namespace oracle_backend.Controllers
                     IDENTITY = "员工"
                 };
                 bool isFirstUser = await _accountRepo.GetAccountCountAsync() == 0;
+                // [Factory Pattern] 创建 Account 实例
                 var newAccount = _accountFactory.CreateAccount(accountDto, isFirstUser);
 
                 await _accountRepo.AddAsync(newAccount);
@@ -256,6 +261,7 @@ namespace oracle_backend.Controllers
                 await _collabRepo.SaveChangesAsync();
 
                 // 建立员工与账号关联
+                // [Factory Pattern] 创建 StaffAccountLink 实例
                 var staffAccount = _accountFactory.CreateStaffLink(accountStr, newStaffId);
                 await _accountRepo.AddStaffAccountLink(staffAccount);
                 await _accountRepo.SaveChangesAsync();
@@ -271,54 +277,6 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // 2.6.2 员工权限管理
-        //[HttpPatch("ModifyStaffAuthority")]
-        //public async Task<IActionResult> ModifyStaffAuthority(
-        //    [FromQuery, Required] string operatorAccount,
-        //    [FromQuery] int staffId,
-        //    [FromQuery] int newAuthority)
-        //{
-        //    // 权限检查
-        //    // 检查被修改的员工是否有临时权限
-        //    var staffAccount = await _accountContext.AccountFromStaffID(staffId);
-        //    if (staffAccount != null)
-        //    {
-        //        var tempAuthorities = await _accountContext.FindTempAuthorities(staffAccount.ACCOUNT);
-        //        if (tempAuthorities != null && tempAuthorities.Count > 0)
-        //        {
-        //            return BadRequest("请先收回临时权限再调整长期权限");
-        //        }
-        //    }
-
-        //    var staff = await _collabContext.FindStaffById(staffId);
-        //    if (staff == null)
-        //    {
-        //        return BadRequest("员工不存在");
-        //    }
-
-        //    var Permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
-        //    if (Permission != null) return Permission;
-
-        //    // 操作员权限要高于被修改员工的权限(值越小权限越高)
-        //    var currentAuthority = await GetCurrentAuthorityLevel(operatorAccount);
-        //    var staffAuthority = await GetCurrentAuthorityLevel(staffAccount.ACCOUNT);
-        //    if (currentAuthority >= staffAuthority)
-        //    {
-        //        return BadRequest("操作员权限要高于被修改员工的权限");
-        //    }
-
-        //    // newAuthority不可高于修改者的权限
-        //    if (newAuthority < currentAuthority)
-        //    {
-        //        return BadRequest("不可分配高于自身的权限等级");
-        //    }
-
-        //    staffAccount.AUTHORITY = newAuthority;
-        //    await _collabContext.SaveChangesAsync();
-        //    await _accountContext.SaveChangesAsync();
-
-        //    return Ok("员工权限修改成功");
-        //}
         // 2.6.2 员工权限管理
         [HttpPatch("ModifyStaffAuthority")]
         public async Task<IActionResult> ModifyStaffAuthority(
@@ -342,7 +300,7 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // [Factory Pattern] 使用工厂创建组件
+                // [Factory Pattern] [Composite Pattern] 使用工厂创建组件
                 IPersonComponent staffComponent = _personFactory.CreateStaff(staffId);
 
                 var config = new AuthorityConfig
@@ -350,6 +308,7 @@ namespace oracle_backend.Controllers
                     PermanentAuthorityLevel = newAuthority
                 };
 
+                // [Composite Pattern] 调用组件接口
                 await staffComponent.ManageAuthorityAsync(config);
 
                 return Ok("员工权限修改成功");
@@ -362,61 +321,6 @@ namespace oracle_backend.Controllers
 
 
         // 2.6.3 员工/管理员修改自己/下属的信息
-
-        //[HttpPatch("ModifyStaffInfo")]
-        //public async Task<IActionResult> UpdateStaff(
-        //    [FromQuery, Required] int staffId,
-        //    [FromQuery, Required] string operatorAccount,
-        //    [FromBody] StaffDto dto)
-        //{
-        //    // 查找员工信息
-        //    var staff = await _collabContext.FindStaffById(staffId);
-        //    if (staff == null)
-        //        return NotFound("员工不存在");
-
-        //    // 判断操作员身份
-        //    var operatorAccountObj = await _accountContext.FindAccount(operatorAccount);
-        //    if (operatorAccountObj == null)
-        //        return BadRequest("操作员账号不存在");
-
-        //    // 判断是否为员工本人
-        //    var staffAccount = await _accountContext.CheckStaff(operatorAccount);
-        //    bool isSelf = staffAccount != null && staffAccount.STAFF_ID == staffId;
-
-        //    // 管理员/管理人员权限
-        //    var isAdmin = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
-
-        //    // 员工本人只能改姓名、性别
-        //    if (isSelf && isAdmin != null)
-        //    {
-        //        // 只允许修改姓名和性别
-        //        if (staff.STAFF_APARTMENT != dto.STAFF_APARTMENT ||
-        //            staff.STAFF_POSITION != dto.STAFF_POSITION ||
-        //            staff.STAFF_SALARY != dto.STAFF_SALARY)
-        //        {
-        //            return BadRequest("无权限修改，请联系管理人员");
-        //        }
-
-        //        staff.STAFF_NAME = dto.STAFF_NAME;
-        //        staff.STAFF_SEX = dto.STAFF_SEX;
-        //        await _collabContext.SaveChangesAsync();
-        //        return Ok("修改成功");
-        //    }
-
-        //    // 管理人员或管理员可修改全部信息
-        //    if (isAdmin == null)
-        //    {
-        //        staff.STAFF_NAME = dto.STAFF_NAME;
-        //        staff.STAFF_SEX = dto.STAFF_SEX;
-        //        staff.STAFF_APARTMENT = dto.STAFF_APARTMENT;
-        //        staff.STAFF_POSITION = dto.STAFF_POSITION;
-        //        staff.STAFF_SALARY = dto.STAFF_SALARY;
-        //        await _collabContext.SaveChangesAsync();
-        //        return Ok("修改成功");
-        //    }
-
-        //    return BadRequest("无权限修改");
-        //}
         [HttpPatch("ModifyStaffInfo")]
         public async Task<IActionResult> UpdateStaff(
             [FromQuery, Required] int staffId,
@@ -439,16 +343,15 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 1. [Composite 模式介入] 构建配置对象
+                // 1. [Composite Pattern] 构建配置对象
                 var config = new StaffProfileConfig();
 
                 if (isSelf && isAdmin != null)
                 {
                     // 员工本人：只能改姓名、性别
-                    // Leaf 的 UpdateProfileAsync 只会更新非 null 的字段
                     config.Name = dto.STAFF_NAME;
                     config.Sex = dto.STAFF_SEX;
-                    // 其他字段保持 null，Leaf 不会去更新它们
+                    // Department, Position, BaseSalary 等字段保持 null, Leaf 不会更新
                 }
                 else
                 {
@@ -460,8 +363,9 @@ namespace oracle_backend.Controllers
                     config.BaseSalary = dto.STAFF_SALARY;
                 }
 
-                // 2. 调用组件
+                // 2. [Factory Pattern] [Composite Pattern] 创建组件并调用
                 IPersonComponent staffComponent = _personFactory.CreateStaff(staffId);
+                // [Composite Pattern] 调用组件接口
                 await staffComponent.UpdateProfileAsync(config);
 
                 return Ok("修改成功");
@@ -474,70 +378,7 @@ namespace oracle_backend.Controllers
 
 
         // 2.6.5 员工工资管理(底薪，奖金，罚金)
-        //[HttpPost("StaffSalaryManagement")]
-        //public async Task<IActionResult> ManageStaffSalary(
-        //    [FromQuery, Required] string operatorAccount,
-        //    [FromQuery, Required] int staffId,
-        //    [FromQuery] DateTime monthTime, // 格式 如 2008-11
-        //    [FromBody] SalaryDto dto)
-        //{
-
-        //    // 查询员工
-        //    var staff = await _collabContext.FindStaffById(staffId);
-        //    if (staff == null) return NotFound("员工不存在");
-
-        //    // 权限检查
-        //    var permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
-        //    if (permission != null) return permission;
-
-        //    // 查询SalarySlip
-        //    var salarySlip = await _collabContext.GetSalarySlipByStaffId(staffId, monthTime);
-        //    if (salarySlip == null)
-        //    {
-        //        // 创建数据
-        //        salarySlip = new SalarySlip
-        //        {
-        //            STAFF_ID = staffId,
-        //            MONTH_TIME = monthTime,
-        //            ATD_COUNT = 0,
-        //            BONUS = dto.BONUS,
-        //            FINE = dto.FINE
-        //        };
-        //        staff.STAFF_SALARY = dto.BASE_SALARY;
-        //        await _collabContext.SalarySlips.AddAsync(salarySlip);
-        //    }
-        //    else
-        //    {
-        //        // 更新员工工资信息
-        //        staff.STAFF_SALARY = dto.BASE_SALARY;
-        //        salarySlip.BONUS = dto.BONUS;
-        //        salarySlip.FINE = dto.FINE;
-        //    }
-
-        //    // 查询MonthSalaryCost
-        //    var monthSalaryCost = await _collabContext.GetMonthSalaryCostByStaffId(monthTime);
-        //    if (monthSalaryCost == null)
-        //    {
-        //        monthSalaryCost = new MonthSalaryCost
-        //        {
-        //            MONTH_TIME = monthTime,
-        //            TOTAL_COST = (int)(staff.STAFF_SALARY + salarySlip.BONUS - salarySlip.FINE)
-        //        };
-        //        await _collabContext.MonthSalaryCosts.AddAsync(monthSalaryCost);
-        //    }
-        //    else
-        //    {
-        //        monthSalaryCost.TOTAL_COST = (int)(staff.STAFF_SALARY + salarySlip.BONUS - salarySlip.FINE);
-        //    }
-        //    await _collabContext.SaveChangesAsync();
-
-        //    return Ok("员工工资信息修改成功");
-        //}
-        // =========================================================================
-        // 修改点 3: 2.6.5 员工工资管理
-        // 原逻辑：查询 SalarySlip, 计算 TotalCost, 更新 MonthSalaryCost 表
-        // 新逻辑：这一整套复杂的关联表更新逻辑已全部封装在 Leaf.ManageSalaryAsync 中
-        // =========================================================================
+        // [Composite Pattern] 这一整套复杂的关联表更新逻辑已全部封装在 Leaf.ManageSalaryAsync 中
         [HttpPost("StaffSalaryManagement")]
         public async Task<IActionResult> ManageStaffSalary(
             [FromQuery, Required] string operatorAccount,
@@ -553,11 +394,10 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 1. [Composite 模式介入]
+                // 1. [Factory Pattern] [Composite Pattern] 创建组件
                 IPersonComponent staffComponent = _personFactory.CreateStaff(staffId);
 
                 // 2. 构建参数包
-                // 注意：StaffDto 中的 BASE_SALARY 对应 Config.NewBaseSalary
                 var config = new SalaryManagementConfig
                 {
                     MonthTime = monthTime,
@@ -566,8 +406,7 @@ namespace oracle_backend.Controllers
                     Fine = dto.FINE
                 };
 
-                // 3. 调用接口
-                // Leaf 会自动处理 SalarySlip 的创建/更新以及 MonthSalaryCost 的联动更新
+                // 3. [Composite Pattern] 调用接口
                 await staffComponent.ManageSalaryAsync(config);
 
                 return Ok("员工工资信息修改成功");
@@ -581,62 +420,6 @@ namespace oracle_backend.Controllers
 
 
         // 2.6.7 临时权限管理功能
-        //[HttpPost("temporary_authority")]
-        //public async Task<IActionResult> ManageTemporaryAuthority(
-        //    [FromQuery, Required] string operatorAccount,
-        //    [FromBody, Required] TempAuthorityDto dto)
-        //{
-        //    // 根据dto获取staff account
-        //    var account = await _accountContext.FindAccount(dto.account);
-        //    if (account == null) return NotFound("账号不存在");
-
-        //    // 获取staff
-        //    var staff = await _collabContext.FindStaffByAccount(dto.account);
-        //    if (staff == null) return NotFound("员工不存在");
-
-        //    // 权限检查
-        //    var permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
-        //    if (permission != null) return permission;
-
-        //    // 获取operator权限大小
-        //    var operatorAuthority = await GetCurrentAuthorityLevel(operatorAccount);
-
-        //    // 临时权限不得大于操作者权限
-        //    if (dto.tempAuthority < operatorAuthority) return BadRequest("临时权限不得大于操作者权限");
-
-        //    // 如果员工非临时权限大于等于该临时权限,则返回
-        //    if (account.AUTHORITY <= dto.tempAuthority) return BadRequest("员工权限已大于等于该临时权限");
-
-        //    // 如果员工权限大于操作者权限
-        //    if (account.AUTHORITY < operatorAuthority) return BadRequest("该员工权限大于操作者权限");
-
-        //    // 检查该活动是否存在, 若活动已结束，提示 “活动已结束”
-        //    var saleEvent = await _eventContext.FindEventById(dto.eventId);
-        //    if (saleEvent == null) return NotFound("活动不存在");
-        //    //if (saleEvent.EVENT_END < DateTime.Now) return BadRequest("活动已结束");
-
-        //    // 若已有该活动的权限
-        //    var existingTempAuthority = await _accountContext.TEMP_AUTHORITY
-        //        .FirstOrDefaultAsync(ta => ta.ACCOUNT == dto.account && ta.EVENT_ID == dto.eventId);
-        //    if (existingTempAuthority != null)
-        //    {
-        //        // 如果临时权限大于操作者权限,则返回
-        //        //if (existingTempAuthority.TEMP_AUTHORITY < operatorAuthority) return BadRequest("操作对象临时权限更大,不可修改");
-        //        _accountContext.TEMP_AUTHORITY.Remove(existingTempAuthority);
-        //    }
-
-        //    // 创建临时权限
-        //    var tempAuthority = new TempAuthority
-        //    {
-        //        ACCOUNT = dto.account,
-        //        EVENT_ID = dto.eventId,
-        //        TEMP_AUTHORITY = dto.tempAuthority,
-        //    };
-        //    await _accountContext.TEMP_AUTHORITY.AddAsync(tempAuthority);
-        //    await _accountContext.SaveChangesAsync();
-
-        //    return Ok("临时权限修改成功");
-        //}
         [HttpPost("temporary_authority")]
         public async Task<IActionResult> ManageTemporaryAuthority(
             [FromQuery, Required] string operatorAccount,
@@ -659,7 +442,7 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 1. [Composite 模式介入]
+                // 1. [Factory Pattern] [Composite Pattern] 创建组件
                 IPersonComponent staffComponent = _personFactory.CreateStaff(staff.STAFF_ID);
 
                 // 2. 构建配置
@@ -670,8 +453,7 @@ namespace oracle_backend.Controllers
                     IsRevokeTemp = false // 授予模式
                 };
 
-                // 3. 调用接口
-                // Leaf 内部会检查：活动是否存在、员工常驻权限是否已覆盖临时权限
+                // 3. [Composite Pattern] 调用接口
                 await staffComponent.ManageAuthorityAsync(config);
 
                 return Ok("临时权限修改成功");
@@ -685,35 +467,6 @@ namespace oracle_backend.Controllers
 
 
         // 撤销临时权限
-        //[HttpDelete("revoke_temporary_authority")]
-        //public async Task<IActionResult> RevokeTemporaryAuthority(
-        //    [FromQuery, Required] string operatorAccount,
-        //    [FromQuery, Required] string staffAccount,
-        //    [FromQuery, Required] int eventId)
-        //{
-        //    // 根据staffAccount获取staff
-        //    var staff = await _collabContext.FindStaffByAccount(staffAccount);
-        //    if (staff == null) return NotFound("员工不存在");
-
-        //    // 权限检查
-        //    var permission = await CanModifyStaff(operatorAccount, staff.STAFF_APARTMENT);
-        //    if (permission != null) return permission;
-
-        //    // 检查该活动是否存在, 若活动已结束，提示 “活动已结束”
-        //    var saleEvent = await _eventContext.FindEventById(eventId);
-        //    if (saleEvent == null) return NotFound("活动不存在");
-        //    //if (saleEvent.EVENT_END < DateTime.Now) return BadRequest("活动已结束");
-
-        //    // 撤销临时权限
-        //    var tempAuthority = await _accountContext.TEMP_AUTHORITY
-        //        .FirstOrDefaultAsync(ta => ta.ACCOUNT == staffAccount && ta.EVENT_ID == eventId);
-        //    if (tempAuthority == null) return NotFound("临时权限不存在");
-
-        //    _accountContext.TEMP_AUTHORITY.Remove(tempAuthority);
-        //    await _accountContext.SaveChangesAsync();
-
-        //    return Ok("临时权限撤销成功");
-        //}
         [HttpDelete("revoke_temporary_authority")]
         public async Task<IActionResult> RevokeTemporaryAuthority(
             [FromQuery, Required] string operatorAccount,
@@ -728,7 +481,7 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // [Factory Pattern] 使用工厂创建组件
+                // [Factory Pattern] [Composite Pattern] 使用工厂创建组件
                 IPersonComponent staffComponent = _personFactory.CreateStaff(staff.STAFF_ID);
 
                 // 2. 构建配置 (撤销模式)
@@ -738,7 +491,7 @@ namespace oracle_backend.Controllers
                     IsRevokeTemp = true
                 };
 
-                // 3. 调用接口
+                // 3. [Composite Pattern] 调用接口
                 await staffComponent.ManageAuthorityAsync(config);
 
                 return Ok("临时权限撤销成功");

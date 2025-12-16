@@ -9,11 +9,12 @@ namespace oracle_backend.Controllers
     [ApiController]
     public class CollaborationController : ControllerBase
     {
-        // 替换为 Repository
+        // [Repository Pattern] 使用 Repository 接口进行数据访问
         private readonly ICollaborationRepository _collabRepo;
         private readonly IAccountRepository _accountRepo;
         private readonly ILogger<CollaborationController> _logger;
 
+        // [Dependency Injection] 注入 Repository 和 Logger
         public CollaborationController(
             ICollaborationRepository collabRepo,
             IAccountRepository accountRepo,
@@ -24,7 +25,7 @@ namespace oracle_backend.Controllers
             _logger = logger;
         }
 
-        // 权限验证方法 (使用 Repository)
+        // 权限验证方法
         private async Task<ActionResult?> CheckPermission(string operatorAccountId, int requiredAuthority)
         {
             if (string.IsNullOrEmpty(operatorAccountId))
@@ -32,7 +33,7 @@ namespace oracle_backend.Controllers
                 return BadRequest("操作员账号不能为空");
             }
 
-            // 检查账号是否存在
+            // [Repository Pattern] 检查账号是否存在
             var account = await _accountRepo.FindAccountByUsername(operatorAccountId);
             if (account == null)
             {
@@ -45,10 +46,10 @@ namespace oracle_backend.Controllers
                 return BadRequest("账号已被封禁，无法执行操作");
             }
 
-            // 检查常驻权限
+            // [Repository Pattern] 检查常驻权限
             bool hasPermission = await _accountRepo.CheckAuthority(operatorAccountId, requiredAuthority);
 
-            // 如果没有常驻权限，检查临时权限
+            // [Repository Pattern] 如果没有常驻权限，检查临时权限
             if (!hasPermission)
             {
                 var tempAuthorities = await _accountRepo.FindTempAuthorities(operatorAccountId);
@@ -77,7 +78,7 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 检查ID唯一性 (使用 Repository)
+                // [Repository Pattern] 检查ID唯一性
                 var exists = await _collabRepo.ExistsAsync(dto.CollaborationId);
 
                 if (exists)
@@ -93,6 +94,7 @@ namespace oracle_backend.Controllers
                     EMAIL = dto.Email
                 };
 
+                // [Repository Pattern] 添加并保存
                 await _collabRepo.AddAsync(collaboration);
                 await _collabRepo.SaveChangesAsync();
 
@@ -118,23 +120,10 @@ namespace oracle_backend.Controllers
             var permissionCheck = await CheckPermission(operatorAccountId, 2);
             if (permissionCheck != null) return permissionCheck;
 
-            // 使用 Repository 获取所有数据，然后在内存中筛选 
-            // (或者在 Repository 中实现特定的 Search 方法，这里为了复用性选择在 Service 层/Controller 层筛选，前提是数据量可控)
-            // 如果数据量大，建议在 ICollaborationRepository 中增加 SearchAsync 方法
-
-            // 为了演示 Repository 的使用，我们这里假设 ICollaborationRepository 是继承自 BaseRepository，
-            // 我们可以利用 FindAsync 传入表达式，或者 GetAllAsync 后筛选。
-            // 这里为了支持多个可选条件，且 BaseRepo 的 FindAsync 只支持单一表达式，我们可能需要组合查询。
-            // 最佳实践是在 Repository 中添加 Search 方法，但如果为了不动 Repo 接口太频繁：
-
-            // 方案 A：在 Repository 中添加 SearchAsync 方法 (推荐)
-            // 方案 B：使用 GetAllAsync 在内存筛选 (仅限数据量小)
-
-            // 这里我们采用最简单的方式：先获取所有，再筛选 (假设合作方数量不多)
-            // 如果需要高性能，请在 ICollaborationRepository 中添加 Search 方法
-
+            // [Repository Pattern] 获取所有数据
             IEnumerable<Collaboration> query = await _collabRepo.GetAllAsync();
 
+            // 在内存中应用筛选条件
             if (id.HasValue)
                 query = query.Where(c => c.COLLABORATION_ID == id);
 
@@ -160,13 +149,13 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 查找指定ID的合作方
+                // [Repository Pattern] 查找指定ID的合作方
                 var collaboration = await _collabRepo.GetByIdAsync(id);
 
                 if (collaboration == null)
                     return NotFound("合作方不存在");
 
-                // 检查活动状态冲突 (使用 Repository 封装的方法)
+                // [Repository Pattern] 检查活动状态冲突
                 if (await _collabRepo.HasActiveEventsAsync(id))
                     return BadRequest("存在进行中的合作活动，无法修改");
 
@@ -183,7 +172,7 @@ namespace oracle_backend.Controllers
                 if (!string.IsNullOrEmpty(dto.Email))
                     collaboration.EMAIL = dto.Email;
 
-                // 更新并保存
+                // [Repository Pattern] 更新并保存
                 _collabRepo.Update(collaboration);
                 await _collabRepo.SaveChangesAsync();
 
@@ -243,15 +232,16 @@ namespace oracle_backend.Controllers
 
             try
             {
+                // [Repository Pattern] 获取实体
                 var collaboration = await _collabRepo.GetByIdAsync(id);
                 if (collaboration == null)
                     return NotFound("合作方不存在");
 
-                // 检查活动状态冲突
+                // [Repository Pattern] 检查活动状态冲突
                 if (await _collabRepo.HasActiveEventsAsync(id))
                     return BadRequest("存在进行中的合作活动，无法删除");
 
-                // 删除合作方
+                // [Repository Pattern] 删除并保存
                 _collabRepo.Remove(collaboration);
                 await _collabRepo.SaveChangesAsync();
 

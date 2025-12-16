@@ -1,39 +1,38 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Patterns.State.Equipment;
 using System.ComponentModel.DataAnnotations;
-using oracle_backend.patterns.Facade_Pattern.Interfaces; // 引用外观模式接口
+using oracle_backend.patterns.Facade_Pattern.Interfaces;
 
 namespace oracle_backend.Controllers
 {
-    // Refactored with State Pattern
     [ApiController]
     [Route("api/[controller]")]
     public class EquipmentController : ControllerBase
     {
+        // [Repository Pattern] 数据访问层接口
         private readonly IEquipmentRepository _equipRepo;
         private readonly IAccountRepository _accountRepo;
         private readonly ILogger<EquipmentController> _logger;
-        // [新增] 外观接口
+        
+        // [Facade Pattern] 设备系统外观接口
         private readonly IEquipmentSystemFacade _equipFacade;
 
         public EquipmentController(
             IEquipmentRepository equipRepo,
             IAccountRepository accountRepo,
             ILogger<EquipmentController> logger,
-            // [新增] 注入参数
             IEquipmentSystemFacade equipFacade)
         {
             _equipRepo = equipRepo;
             _accountRepo = accountRepo;
             _logger = logger;
-            // [新增] 赋值
             _equipFacade = equipFacade;
         }
 
         /// <summary>
-        /// 创建设备状态上下文 (Refactored with State Pattern)
+        /// [State Pattern] 创建设备状态上下文
         /// </summary>
         private EquipmentStateContext CreateEquipmentStateContext(Equipment equipment)
         {
@@ -51,7 +50,7 @@ namespace oracle_backend.Controllers
             public int equipment_ID { get; set; }
             public string equipment_TYPE { get; set; }
             public string equipment_STATUS { get; set; }
-            public int? area_ID { get; set; } // int? 以防找不到位置
+            public int? area_ID { get; set; } 
         }
 
         [HttpGet("EquipmentList")]
@@ -61,7 +60,7 @@ namespace oracle_backend.Controllers
 
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
+                // [Repository Pattern] 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -75,7 +74,6 @@ namespace oracle_backend.Controllers
                     if (staffAccount == null)
                         return BadRequest("该操作员无对应员工");
 
-                    // 使用 Repository 获取员工信息
                     var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
 
                     if (staff == null)
@@ -85,8 +83,9 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑：查询设备列表
+                // [Repository Pattern] 业务逻辑：查询设备列表
                 var equipments = await _equipRepo.GetAllAsync();
+                
                 // 优化：一次性获取所有位置映射
                 var locationMap = await _equipRepo.GetAllEquipmentAreaIdsAsync();
 
@@ -130,7 +129,7 @@ namespace oracle_backend.Controllers
             {
                 _logger.LogInformation($"收到 OperatorID = {OperatorID}");
 
-                // 1. 权限校验逻辑 (保留重复代码)
+                // 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -153,7 +152,7 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // [Repository Pattern] 业务逻辑
                 var equipment = await _equipRepo.GetByIdAsync(equipmentID);
                 if (equipment == null)
                     return NotFound("未找到该设备");
@@ -201,7 +200,7 @@ namespace oracle_backend.Controllers
         private static readonly string[] StandbyLightActions = { "开灯", "紧急停止" };
         private static readonly string[] StandbyElevatorActions = { "启动", "紧急停止" };
 
-        // Refactored with State Pattern - 使用状态模式获取可用操作
+        // [State Pattern] & [Facade Pattern] 使用外观模式封装状态模式逻辑来获取可用操作
         [HttpGet("ActionsList")]
         public async Task<IActionResult> GetAvailableActions([FromQuery] int id, [FromQuery] string OperatorID)
         {
@@ -209,13 +208,11 @@ namespace oracle_backend.Controllers
             
             try
             {
-                // [重构] 使用外观模式替代原有的权限检查和状态逻辑
                 var actions = await _equipFacade.GetAvailableActionsAsync(id, OperatorID);
                 return Ok(actions);
             }
             catch (UnauthorizedAccessException ex)
             {
-                // Facade 中权限不足抛出此异常，映射回 BadRequest 以保持兼容
                 return BadRequest(ex.Message);
             }
             catch (KeyNotFoundException ex)
@@ -236,7 +233,7 @@ namespace oracle_backend.Controllers
             public string Operation { get; set; }
         }
 
-        // Refactored with State Pattern - 使用状态模式操作设备
+        // [State Pattern] & [Facade Pattern] 使用外观模式操作设备（内部处理状态转换）
         [HttpPost("operate")]
         public async Task<IActionResult> OperateEquipment([FromBody] EquipmentOperationDto dto)
         {
@@ -244,7 +241,6 @@ namespace oracle_backend.Controllers
             
             try
             {
-                // [重构] 使用外观模式处理设备操作全流程
                 var result = await _equipFacade.OperateEquipmentAsync(dto);
 
                 if (!result.Success)
@@ -343,7 +339,7 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在查询工单列表");
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
+                // 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -366,7 +362,7 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // [Repository Pattern] 业务逻辑
                 var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentID);
                 if (equipment == null)
                     return NotFound($"设备ID={dto.EquipmentID} 不存在");
@@ -416,7 +412,7 @@ namespace oracle_backend.Controllers
             public DateTime RepairStart { get; set; }
         }
 
-        // Refactored with State Pattern - 使用状态模式创建维修工单
+        // [Facade Pattern] 使用外观模式创建维修工单（内部可能涉及状态变更）
         [HttpPost("CreateOrder")]
         public async Task<IActionResult> CreateOrder([FromBody] CreateOrderDto dto)
         {
@@ -424,7 +420,6 @@ namespace oracle_backend.Controllers
             
             try
             {
-                // [重构] 使用外观模式创建维修工单
                 var result = await _equipFacade.CreateRepairOrderAsync(dto);
 
                 if (!result.Success)
@@ -484,14 +479,13 @@ namespace oracle_backend.Controllers
             }
         }
 
-        // Refactored with State Pattern - 使用状态模式确认维修
+        // [Facade Pattern] 使用外观模式确认维修结果
         [HttpPost("confirm-repair")]
         public async Task<IActionResult> ConfirmRepair([FromBody] OrderKeyDto dto)
         {
             
             try
             {
-                // [重构] 使用外观模式确认维修结果
                 var result = await _equipFacade.ConfirmRepairAsync(dto);
 
                 if (!result.Success)
@@ -520,7 +514,7 @@ namespace oracle_backend.Controllers
         {
             try
             {
-                // 获取维修部员工列表 (通过 Repository)
+                // [Repository Pattern] 获取维修部员工列表
                 var repairStaffList = await _equipRepo.GetRepairDepartmentStaffAsync();
 
                 if (!repairStaffList.Any())
@@ -548,7 +542,7 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在添加设备");
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
+                // 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -603,7 +597,7 @@ namespace oracle_backend.Controllers
             _logger.LogInformation("正在添加设备位置信息");
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
+                // 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -626,7 +620,7 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // [Repository Pattern] 业务逻辑
                 var equipment = await _equipRepo.GetByIdAsync(equipmentID);
                 if (equipment == null)
                     return BadRequest("该设备ID不存在，无法添加设备位置信息");
@@ -671,7 +665,7 @@ namespace oracle_backend.Controllers
             _logger.LogInformation($"正在尝试删除设备ID={equipmentID}");
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
+                // 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -694,7 +688,7 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // [Repository Pattern] 业务逻辑
                 var equipment = await _equipRepo.GetByIdAsync(equipmentID);
                 if (equipment == null)
                     return NotFound("设备不存在");
@@ -726,7 +720,7 @@ namespace oracle_backend.Controllers
             _logger.LogInformation($"正在尝试解绑设备位置，设备ID={equipmentID}");
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
+                // 权限校验逻辑
                 var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
                 if (!isAuthority)
                 {
@@ -749,7 +743,7 @@ namespace oracle_backend.Controllers
                         return BadRequest("该员工非维修部员工无权操作设备");
                 }
 
-                // 2. 业务逻辑
+                // [Repository Pattern] 业务逻辑
                 var location = await _equipRepo.GetLocationByEquipmentIdAsync(equipmentID);
                 if (location == null)
                     return NotFound("设备位置不存在");
