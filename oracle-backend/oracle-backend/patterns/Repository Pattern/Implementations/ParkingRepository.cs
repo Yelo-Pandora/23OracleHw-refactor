@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using oracle_backend.Dbcontexts;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
@@ -70,7 +70,7 @@ namespace oracle_backend.Patterns.Repository.Implementations
         }
 
         // 车辆管理 (核心业务逻辑)
-        public async Task<(bool Success, string Message)> VehicleEntryAsync(string licensePlate, int spaceId)
+        public async Task<(bool Success, int ErrorCode, string Message)> VehicleEntryAsync(string licensePlate, int spaceId)
         {
             return await _parkingContext.VehicleEntry(licensePlate, spaceId);
         }
@@ -84,6 +84,8 @@ namespace oracle_backend.Patterns.Repository.Implementations
         {
             return await _parkingContext.GetCurrentVehicles(areaId);
         }
+
+
 
         public async Task<VehicleStatusResult?> GetVehicleStatusByLicensePlateAsync(string licensePlate)
         {

@@ -1,4 +1,4 @@
-﻿using oracle_backend.Models;
+using oracle_backend.Models;
 using static oracle_backend.Controllers.ParkingController; // 引用 Controller 中定义的 DTO
 
 namespace oracle_backend.Patterns.Repository.Interfaces
@@ -22,8 +22,10 @@ namespace oracle_backend.Patterns.Repository.Interfaces
         Task<bool> IsParkingSpaceAvailableAsync(int parkingSpaceId);
 
         // --- 3. 车辆管理 (入场/出场/查询) ---
-        Task<(bool Success, string Message)> VehicleEntryAsync(string licensePlate, int spaceId);
+        Task<(bool Success, int ErrorCode, string Message)> VehicleEntryAsync(string licensePlate, int spaceId);
         Task<VehicleExitResult?> VehicleExitAsync(string licensePlate);
+        
+
 
         Task<List<VehicleStatusResult>> GetCurrentVehiclesAsync(int? areaId = null);
         Task<VehicleStatusResult?> GetVehicleStatusByLicensePlateAsync(string licensePlate);

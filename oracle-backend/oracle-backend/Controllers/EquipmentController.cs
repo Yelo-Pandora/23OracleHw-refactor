@@ -1,10 +1,13 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using oracle_backend.Models;
 using oracle_backend.Patterns.Repository.Interfaces;
+using oracle_backend.Patterns.State.Equipment;
 using System.ComponentModel.DataAnnotations;
+using oracle_backend.patterns.Facade_Pattern.Interfaces; // 引用外观模式接口
 
 namespace oracle_backend.Controllers
 {
+    // Refactored with State Pattern
     [ApiController]
     [Route("api/[controller]")]
     public class EquipmentController : ControllerBase
@@ -12,15 +15,34 @@ namespace oracle_backend.Controllers
         private readonly IEquipmentRepository _equipRepo;
         private readonly IAccountRepository _accountRepo;
         private readonly ILogger<EquipmentController> _logger;
+        // [新增] 外观接口
+        private readonly IEquipmentSystemFacade _equipFacade;
 
         public EquipmentController(
             IEquipmentRepository equipRepo,
             IAccountRepository accountRepo,
-            ILogger<EquipmentController> logger)
+            ILogger<EquipmentController> logger,
+            // [新增] 注入参数
+            IEquipmentSystemFacade equipFacade)
         {
             _equipRepo = equipRepo;
             _accountRepo = accountRepo;
             _logger = logger;
+            // [新增] 赋值
+            _equipFacade = equipFacade;
+        }
+
+        /// <summary>
+        /// 创建设备状态上下文 (Refactored with State Pattern)
+        /// </summary>
+        private EquipmentStateContext CreateEquipmentStateContext(Equipment equipment)
+        {
+            return new EquipmentStateContext(
+                equipment.EQUIPMENT_ID,
+                equipment.EQUIPMENT_TYPE,
+                equipment.EQUIPMENT_STATUS,
+                _logger
+            );
         }
 
         // 2.9.1 查看设备列表
@@ -179,70 +201,26 @@ namespace oracle_backend.Controllers
         private static readonly string[] StandbyLightActions = { "开灯", "紧急停止" };
         private static readonly string[] StandbyElevatorActions = { "启动", "紧急停止" };
 
+        // Refactored with State Pattern - 使用状态模式获取可用操作
         [HttpGet("ActionsList")]
         public async Task<IActionResult> GetAvailableActions([FromQuery] int id, [FromQuery] string OperatorID)
         {
             _logger.LogInformation($"正在加载设备 {id} 的可操作列表");
+            
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
-                var isAuthority = await _accountRepo.CheckAuthority(OperatorID, 3);
-                if (!isAuthority)
-                {
-                    return BadRequest("操作者权限不足");
-                }
-
-                var operatorAccount = await _accountRepo.FindAccountByUsername(OperatorID);
-                if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
-                {
-                    var staffAccount = await _accountRepo.CheckStaff(OperatorID);
-                    if (staffAccount == null)
-                        return BadRequest("该操作员无对应员工");
-
-                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
-
-                    if (staff == null)
-                        return BadRequest("不存在该员工");
-
-                    if (staff.STAFF_APARTMENT != "维修部")
-                        return BadRequest("该员工非维修部员工无权操作设备");
-                }
-
-                // 2. 业务逻辑
-                var equipment = await _equipRepo.GetByIdAsync(id);
-                if (equipment == null)
-                    return NotFound("设备不存在");
-
-                List<string> actions = new List<string>();
-                switch (equipment.EQUIPMENT_STATUS)
-                {
-                    case EquipmentStatus.Running:
-                        actions.AddRange(equipment.EQUIPMENT_TYPE.ToLower() switch
-                        {
-                            "空调" => AirConditionerActions,
-                            "照明" => LightingActions,
-                            "电梯" => ElevatorActions,
-                            _ => Array.Empty<string>()
-                        });
-                        break;
-                    case EquipmentStatus.Standby:
-                        actions.AddRange(equipment.EQUIPMENT_TYPE.ToLower() switch
-                        {
-                            "空调" => StandbyAirActions,
-                            "照明" => StandbyLightActions,
-                            "电梯" => StandbyElevatorActions,
-                            _ => Array.Empty<string>()
-                        });
-                        break;
-                    case EquipmentStatus.UnderMaintenance:
-                    case EquipmentStatus.Faulted:
-                        actions.Add("当前状态不可操作");
-                        break;
-                    case EquipmentStatus.Discarded:
-                        actions.Add("设备已废弃，不可操作");
-                        break;
-                }
+                // [重构] 使用外观模式替代原有的权限检查和状态逻辑
+                var actions = await _equipFacade.GetAvailableActionsAsync(id, OperatorID);
                 return Ok(actions);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                // Facade 中权限不足抛出此异常，映射回 BadRequest 以保持兼容
+                return BadRequest(ex.Message);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(ex.Message);
             }
             catch (Exception ex)
             {
@@ -258,111 +236,36 @@ namespace oracle_backend.Controllers
             public string Operation { get; set; }
         }
 
-        // 操作设备
+        // Refactored with State Pattern - 使用状态模式操作设备
         [HttpPost("operate")]
         public async Task<IActionResult> OperateEquipment([FromBody] EquipmentOperationDto dto)
         {
             _logger.LogInformation($"正在操作设备{dto.EquipmentID}:{dto.Operation}");
+            
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
-                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 3);
-                if (!isAuthority)
+                // [重构] 使用外观模式处理设备操作全流程
+                var result = await _equipFacade.OperateEquipmentAsync(dto);
+
+                if (!result.Success)
                 {
-                    return BadRequest("操作者权限不足");
+                    return BadRequest(result.Message);
                 }
 
-                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
-                if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
+                return Ok(new
                 {
-                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
-                    if (staffAccount == null)
-                        return BadRequest("该操作员无对应员工");
-
-                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
-
-                    if (staff == null)
-                        return BadRequest("不存在该员工");
-
-                    if (staff.STAFF_APARTMENT != "维修部")
-                        return BadRequest("该员工非维修部员工无权操作设备");
-                }
-
-                // 2. 业务逻辑
-                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentID);
-                if (equipment == null) return NotFound("未找到该设备");
-                if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Discarded)
-                    return BadRequest("该设备已被弃用，无法操作");
-
-                string originalStatus = equipment.EQUIPMENT_STATUS;
-
-                if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Offline ||
-                    equipment.EQUIPMENT_STATUS == EquipmentStatus.UnderMaintenance ||
-                    equipment.EQUIPMENT_STATUS == EquipmentStatus.Faulted)
-                {
-                    return BadRequest($"设备当前状态为{equipment.EQUIPMENT_STATUS}，不可操作");
-                }
-
-                // 特殊情况，设备制停
-                if (dto.Operation == "紧急停止")
-                {
-                    equipment.EQUIPMENT_STATUS = EquipmentStatus.Faulted;
-                    _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, EquipmentStatus.Faulted);
-                    _logger.LogInformation($"设备{dto.EquipmentID}紧急停止成功，状态变更为故障");
-
-                    _equipRepo.Update(equipment);
-                    await _equipRepo.SaveChangesAsync();
-
-                    return Ok(new
-                    {
-                        status = equipment.EQUIPMENT_STATUS,
-                        result = "紧急制停操作成功，设备已进入故障状态",
-                        statusChanged = true
-                    });
-                }
-
-                if (!IsOperationValidForStatus(dto.Operation, equipment.EQUIPMENT_STATUS, equipment.EQUIPMENT_TYPE))
-                {
-                    return BadRequest("当前状态下不支持此操作");
-                }
-
-                bool result = SimulateDeviceOperation();
-
-                if (result)
-                {
-                    string newStatus = MapOperationToStatus(
-                        dto.Operation,
-                        equipment.EQUIPMENT_STATUS,
-                        equipment.EQUIPMENT_TYPE
-                    );
-
-                    if (equipment.EQUIPMENT_STATUS != newStatus)
-                    {
-                        equipment.EQUIPMENT_STATUS = newStatus;
-                        _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, true, originalStatus, newStatus);
-                        _logger.LogInformation($"设备{dto.EquipmentID}状态变更:{originalStatus} -> {newStatus}");
-                    }
-                    _logger.LogInformation("操作成功:设备={EquipmentId}, 操作员={Operator}, 操作={Operation}",
-                        dto.EquipmentID, dto.OperatorID, dto.Operation);
-                }
-                else
-                {
-                    _equipRepo.LogOperation(dto.EquipmentID, dto.OperatorID, dto.Operation, false, originalStatus, originalStatus);
-                    _logger.LogWarning("操作失败:设备={EquipmentId},操作员={Operator},操作={Operation}",
-                        dto.EquipmentID, dto.OperatorID, dto.Operation);
-                }
-
-                _equipRepo.Update(equipment);
-                await _equipRepo.SaveChangesAsync();
-
-                return result ?
-                    Ok(new
-                    {
-                        status = equipment.EQUIPMENT_STATUS,
-                        result = "操作成功",
-                        statusChanged = equipment.EQUIPMENT_STATUS != originalStatus
-                    }) :
-                    BadRequest("指令发送失败，请重试");
+                    status = result.NewStatus,
+                    result = result.Message,
+                    statusChanged = result.StatusChanged
+                });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(ex.Message);
             }
             catch (Exception ex)
             {
@@ -513,79 +416,36 @@ namespace oracle_backend.Controllers
             public DateTime RepairStart { get; set; }
         }
 
+        // Refactored with State Pattern - 使用状态模式创建维修工单
         [HttpPost("CreateOrder")]
         public async Task<IActionResult> CreateOrder([FromBody] CreateOrderDto dto)
         {
             _logger.LogInformation("正在创建工单");
+            
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码)
-                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 3);
-                if (!isAuthority)
+                // [重构] 使用外观模式创建维修工单
+                var result = await _equipFacade.CreateRepairOrderAsync(dto);
+
+                if (!result.Success)
                 {
-                    return BadRequest("操作者权限不足");
+                    return BadRequest(result.Message);
                 }
 
-                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
-                if (operatorAccount != null && operatorAccount.AUTHORITY == 3)
-                {
-                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
-                    if (staffAccount == null)
-                        return BadRequest("该操作员无对应员工");
-
-                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
-
-                    if (staff == null)
-                        return BadRequest("不存在该员工");
-
-                    if (staff.STAFF_APARTMENT != "维修部")
-                        return BadRequest("该员工非维修部员工无权操作设备");
-                }
-
-                // 2. 业务逻辑
-                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentId);
-                if (equipment == null)
-                    return NotFound("设备不存在");
-
-                if (equipment.EQUIPMENT_STATUS == EquipmentStatus.Discarded)
-                    return BadRequest("该设备已被弃用");
-
-                if (equipment.EQUIPMENT_STATUS != EquipmentStatus.Faulted)
-                    return BadRequest("该设备正常或正在维修中");
-
-                equipment.EQUIPMENT_STATUS = EquipmentStatus.UnderMaintenance;
-                var STAFF_ID = await GetRepairStaff();
-                if (STAFF_ID == 0)
-                    return BadRequest("暂无维修人员，无法维修");
-
-                var repairStart = DateTime.Now;
-                repairStart = new DateTime(repairStart.Year, repairStart.Month, repairStart.Day,
-                     repairStart.Hour, repairStart.Minute, repairStart.Second);
-
-                var newOrder = new RepairOrder
-                {
-                    EQUIPMENT_ID = dto.EquipmentId,
-                    STAFF_ID = STAFF_ID,
-                    REPAIR_START = repairStart,
-                    REPAIR_END = default,
-                    REPAIR_COST = 0
-                };
-
-                await _equipRepo.AddRepairOrderAsync(newOrder);
-                _equipRepo.Update(equipment); // 记得更新设备状态
-                await _equipRepo.SaveChangesAsync(); // 统一保存
-
-                _logger.LogInformation("设备账号 {EquipmentId}, 因 {FaultDescription} 处于维修中", dto.EquipmentId, dto.FaultDescription);
+                // result.Data 包含了 compositeKey 所需的匿名对象结构
                 return Ok(new
                 {
-                    message = "工单创建成功",
-                    compositeKey = new
-                    {
-                        equipmentId = newOrder.EQUIPMENT_ID,
-                        staffId = newOrder.STAFF_ID,
-                        repairStart = newOrder.REPAIR_START
-                    }
+                    message = result.Message,
+                    compositeKey = result.Data
                 });
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(ex.Message);
             }
             catch (Exception ex)
             {
@@ -624,64 +484,30 @@ namespace oracle_backend.Controllers
             }
         }
 
+        // Refactored with State Pattern - 使用状态模式确认维修
         [HttpPost("confirm-repair")]
         public async Task<IActionResult> ConfirmRepair([FromBody] OrderKeyDto dto)
         {
+            
             try
             {
-                // 1. 权限校验逻辑 (保留重复代码) - 注意这里是 AUTHORITY 2
-                var isAuthority = await _accountRepo.CheckAuthority(dto.OperatorID, 2);
-                if (!isAuthority)
+                // [重构] 使用外观模式确认维修结果
+                var result = await _equipFacade.ConfirmRepairAsync(dto);
+
+                if (!result.Success)
                 {
-                    return BadRequest("操作者权限不足，无权操作设备");
+                    return BadRequest(result.Message);
                 }
 
-                var operatorAccount = await _accountRepo.FindAccountByUsername(dto.OperatorID);
-                if (operatorAccount != null && operatorAccount.AUTHORITY == 2)
-                {
-                    var staffAccount = await _accountRepo.CheckStaff(dto.OperatorID);
-                    if (staffAccount == null)
-                        return BadRequest("该操作员无对应员工");
-
-                    var staff = await _equipRepo.GetStaffByIdAsync(staffAccount.STAFF_ID);
-
-                    if (staff == null)
-                        return BadRequest("不存在该员工");
-
-                    if (staff.STAFF_APARTMENT != "维修部")
-                        return BadRequest("该员工非维修部员工无权操作设备");
-                }
-
-                // 2. 业务逻辑
-                var order = await _equipRepo.GetRepairOrderAsync(
-                    dto.EquipmentId, dto.StaffId, dto.RepairStart);
-
-                if (order == null)
-                    return NotFound("工单不存在");
-                if (order.REPAIR_END == default)
-                    return BadRequest("工单尚未完成，无法确认");
-
-                var equipment = await _equipRepo.GetByIdAsync(dto.EquipmentId);
-                if (equipment == null)
-                    return NotFound("设备不存在");
-
-                if (equipment.EQUIPMENT_STATUS != EquipmentStatus.UnderMaintenance)
-                    return BadRequest("工单已确认，无需再次操作");
-
-                if (order.REPAIR_COST > 0)
-                {
-                    equipment.EQUIPMENT_STATUS = EquipmentStatus.Running;
-                    _equipRepo.Update(equipment);
-                    await _equipRepo.SaveChangesAsync();
-                    return Ok("设备状态已更新为正常运行");
-                }
-                else
-                {
-                    equipment.EQUIPMENT_STATUS = EquipmentStatus.Faulted;
-                    _equipRepo.Update(equipment);
-                    await _equipRepo.SaveChangesAsync();
-                    return Ok("维修失败，等待再次分配工单");
-                }
+                return Ok(result.Message);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return BadRequest(ex.Message);
+            }
+            catch (KeyNotFoundException ex)
+            {
+                return NotFound(ex.Message);
             }
             catch (Exception ex)
             {

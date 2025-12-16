@@ -4,10 +4,15 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using oracle_backend.Dbcontexts;
+using oracle_backend.Patterns.Factory.Implementations;
+using oracle_backend.Patterns.Factory.Interfaces;
 using oracle_backend.Patterns.Repository;
 using oracle_backend.Patterns.Repository.Implementations;
 using oracle_backend.Patterns.Repository.Interfaces;
 using oracle_backend.Services;
+// [新增] 外观模式的命名空间
+using oracle_backend.patterns.Facade_Pattern.Interfaces;
+using oracle_backend.patterns.Facade_Pattern.Implementations;
 
 
 namespace oracle_backend
@@ -74,6 +79,8 @@ namespace oracle_backend
 
             // 注册服务
             builder.Services.AddScoped<SaleEventService>();
+
+            // 注册仓储模式
             builder.Services.AddScoped<IParkingRepository, ParkingRepository>();
             builder.Services.AddScoped<ISaleEventService, SaleEventService>();
             builder.Services.AddScoped<IAccountRepository, AccountRepository>();
@@ -83,6 +90,22 @@ namespace oracle_backend
             builder.Services.AddScoped<ICollaborationRepository, CollaborationRepository>();
             builder.Services.AddScoped<IStoreRepository, StoreRepository>();
             builder.Services.AddScoped<IVenueEventRepository, VenueEventRepository>();
+            builder.Services.AddScoped<IEquipmentRepository, EquipmentRepository>();
+
+            //注册工厂模式
+            builder.Services.AddScoped<IAreaComponentFactory, AreaComponentFactory>();
+            builder.Services.AddScoped<IPersonComponentFactory, PersonComponentFactory>();
+            builder.Services.AddScoped<ISaleEventFactory, SaleEventFactory>();
+            builder.Services.AddScoped<IAccountFactory, AccountFactory>();
+            builder.Services.AddScoped<IVenueEventFactory, VenueEventFactory>();
+            builder.Services.AddScoped<IStoreFactory, StoreFactory>();
+
+            //注册外观模式
+            builder.Services.AddScoped<IParkingSystemFacade, ParkingSystemFacade>();
+            builder.Services.AddScoped<IStoreSystemFacade, StoreSystemFacade>();
+            builder.Services.AddScoped<IEquipmentSystemFacade, EquipmentSystemFacade>();
+            builder.Services.AddScoped<IVenueEventSystemFacade, VenueEventSystemFacade>();
+
 
             // 添加CORS配置
             builder.Services.AddCors(options =>

@@ -47,7 +47,7 @@ namespace oracle_backend.Patterns.Repository.Implementations
         public async Task<int> GetMaxStaffIdAsync()
         {
             // 如果表为空，MaxAsync 会抛出异常或返回 null，需处理空表情况
-            if (!await _collabContext.Staffs.AnyAsync())
+            if (await _collabContext.Staffs.CountAsync() == 0)
             {
                 return 0;
             }
