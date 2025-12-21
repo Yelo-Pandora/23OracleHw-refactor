@@ -13,6 +13,7 @@ Thumbs.db
 .vs/
 *.suo
 *.user
+*.sln
 
 # Visual Studio Code
 .vscode/
